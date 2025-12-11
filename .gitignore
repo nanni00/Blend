@@ -1,13 +1,6 @@
 # Custom
-groups
-config.ini
-vertica.ini
-vertica_example.ini
-postgres.ini
-logs/
-.idea/
-freqs_dict.pkl
-freqs_dict.csv
+.gitignore
+__pycache__
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
