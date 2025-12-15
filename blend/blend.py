@@ -1,3 +1,4 @@
+import logging
 import multiprocessing
 import os
 from _thread import LockType
@@ -16,7 +17,7 @@ from tqdm import tqdm
 from .DBHandler import DBHandler
 from .Operators import Combiners, Seekers
 from .Plan import Plan
-from .utils import calculate_xash, clean
+from .utils import calculate_xash, clean, init_logger
 
 __all__ = ["BLEND"]
 
@@ -28,7 +29,7 @@ def parse_table(
     clean_function_args: dict,
     xash_size: int,
     disable_xash: bool,
-):
+) -> tuple[str, pl.DataFrame | str]:
     table_id = table_path.stem
     format = table_path.suffix.replace(".", "")
 
@@ -36,10 +37,6 @@ def parse_table(
         match format:
             case "csv":
                 table_df = pl.scan_csv(table_path, **scan_table_opts)
-
-                # ignore_errors=True,
-                # n_rows=limit_rows_per_table,
-                # infer_schema_length=10_000,
             case "parquet":
                 table_df = pl.scan_parquet(table_path, **scan_table_opts)
             case _:
@@ -54,11 +51,17 @@ def parse_table(
         table_df = table_df.filter(
             ~pl.all_horizontal(pl.all().exclude("blend_row_index").is_null())
         ).collect()
-    except (pl.exceptions.ComputeError, pl.exceptions.SchemaError, ValueError) as e:
-        return table_id, False, e
 
-    if table_df.shape[0] == 0 or table_df.shape[1] == 0:
-        return table_id, False, "Empty table"
+        if table_df.shape[0] * table_df.shape[1] == 0:
+            raise pl.exceptions.NoDataError("Empty table.")
+
+    except (
+        pl.exceptions.ComputeError,
+        pl.exceptions.SchemaError,
+        pl.exceptions.NoDataError,
+        ValueError,
+    ) as e:
+        return table_id, f"{type(e)}::{str(e)}"
 
     # identify the numeric columns for the correlation part
     numeric_cols = set(table_df.select(cs.numeric()).columns)
@@ -75,11 +78,11 @@ def parse_table(
                     lambda x: clean_function(x, **clean_function_args),
                     return_dtype=pl.String,
                 )
-                .alias("CellValue")
+                .alias("cell_value")
             )
         else:
             cleaned = pl.Series(
-                "CellValue",
+                "cell_value",
                 [
                     clean_function(item, **clean_function_args)
                     for row_counter, item in column.rows()
@@ -89,9 +92,9 @@ def parse_table(
         result_df = column.with_columns(
             [
                 cleaned,
-                pl.lit(table_id).alias("TableId"),
-                pl.lit(col_counter).alias("ColumnId"),
-                pl.col("blend_row_index").alias("RowId"),
+                pl.lit(table_id).alias("table_id"),
+                pl.lit(col_counter).alias("column_id"),
+                pl.col("blend_row_index").alias("row_id"),
             ]
         )
 
@@ -102,11 +105,11 @@ def parse_table(
                 pl.when(pl.col(col_name).is_not_null())
                 .then(pl.col(col_name) >= mean)
                 .otherwise(None)
-                .alias("Quadrant")
+                .alias("quadrant")
             )
         else:
             result_df = result_df.with_columns(
-                pl.lit(None).cast(pl.Boolean).alias("Quadrant")
+                pl.lit(None).cast(pl.Boolean).alias("quadrant")
             )
 
         columns_df.append(result_df.drop("blend_row_index", col_name))
@@ -116,20 +119,20 @@ def parse_table(
     if disable_xash:
         final_data = all_data.with_columns(pl.lit(int(0).to_bytes(), pl.Binary))
     else:
-        superkey_data = all_data.group_by("RowId").agg(
+        superkey_data = all_data.group_by("row_id").agg(
             pl.map_groups(
-                ["CellValue"],
+                ["cell_value"],
                 lambda values: calculate_superkey_for_row(
                     values[0].to_list(), xash_size
                 ),
                 return_dtype=pl.Binary,
                 returns_scalar=True,
-            ).alias("SuperKey")
+            ).alias("super_key")
         )
 
-        final_data = all_data.join(superkey_data, on="RowId")
+        final_data = all_data.join(superkey_data, on="row_id")
 
-    return table_id, True, final_data
+    return table_id, final_data
 
 
 def calculate_superkey_for_row(cell_values: list, xash_size: int) -> bytes:
@@ -149,7 +152,7 @@ def _process_task(
     db_handler: DBHandler,
     lock: LockType,
 ):
-    table_id, success, df_or_error = parse_table(
+    table_id, df_or_error = parse_table(
         table_path,
         scan_table_opts or {},
         clean_function,
@@ -158,16 +161,13 @@ def _process_task(
         disable_xash,
     )
 
-    if success:
+    if isinstance(df_or_error, pl.DataFrame):
         # FIX: this sequentialization can be improved
         with lock:
-            try:
-                db_handler.save_data_to_duckdb(df_or_error)
-                return table_id, True
-            except Exception as e:
-                print(f"Failed insert for table={table_id}, e={e}")
-                return table_id, False
-    return table_id, True
+            db_handler.save_data_to_duckdb(df_or_error)
+        return table_id, True
+    else:
+        return table_id, False
 
 
 class BLEND:
@@ -185,10 +185,6 @@ class BLEND:
         # not sure if this is the best option for this workflow
         self._db_handler: Optional[DBHandler] = None
 
-        # assert not clean_function or isinstance(clean_function, function), (
-        #     "Clean function must be None or Callable"
-        # )
-
         # Clean function and relative parameters
         self._clean_function = clean_function if clean_function else clean
         self._clean_function_args = clean_function_args if clean_function_args else {}
@@ -204,16 +200,17 @@ class BLEND:
 
     def create_index(
         self,
-        tables_path: str | Path,
+        tables_path: Path,
+        logdir_path: Path,
         max_workers: Optional[int] = None,
         scan_table_opts: Optional[dict] = None,
         verbose: bool = False,
     ) -> tuple:
-        if isinstance(tables_path, str):
-            tables_path = Path(tables_path)
-
         if not tables_path.exists():
             raise FileNotFoundError(f"tables path doesn't exist: {tables_path}")
+
+        init_logger(logdir_path)
+        logger = logging.getLogger(f"blend_logger_{os.getpid()}")
 
         # get IDs of the effective tables
         table_ids = os.listdir(tables_path)
@@ -229,10 +226,6 @@ class BLEND:
         # FIX: sometimes this doesn't work at all (check on polars with multiproc
         # setting), even by changhing with different mp_context
         with ProcessPoolExecutor(max_workers) as executor:
-            clean_function = self._clean_function
-            clean_function_args = self._clean_function_args
-            xash_size = self.xash_size
-            db_handler = self.db_handler
             manager = multiprocessing.Manager()
             lock = manager.Lock()
 
@@ -241,11 +234,11 @@ class BLEND:
                     _process_task,
                     tables_path.joinpath(table_id),
                     scan_table_opts,
-                    clean_function,
-                    clean_function_args,
-                    xash_size,
+                    self._clean_function,
+                    self._clean_function_args,
+                    self.xash_size,
                     self.disable_xash,
-                    db_handler,
+                    self.db_handler,
                     lock,
                 )
                 for table_id in list(table_ids)
@@ -257,13 +250,13 @@ class BLEND:
                 as_completed(futures),
                 desc="Parsing and storing tables: ",
                 total=len(table_ids),
-                disable=False,
+                disable=verbose,
             ):
                 try:
                     table_id, success = future.result()
                     non_empty_tables += success
-                except TimeoutError:
-                    continue
+                except Exception as e:
+                    logger.error(f"[error:{type(e)}][msg:{e}]")
 
         end_ins_t = time()
 
@@ -274,13 +267,13 @@ class BLEND:
             Correctly parsed {non_empty_tables}.
             Creating indexes...
             """
-            print(cleandoc(s))
+            logger.info(cleandoc(s))
 
         self.db_handler.create_column_indexes()
         end_idx_t = time()
 
         if verbose:
-            print("Index creation completed.")
+            logger.info("Index creation completed.")
 
         self.db_handler.close()
         return (end_ins_t - start_t, end_idx_t - end_ins_t, end_idx_t - start_t)

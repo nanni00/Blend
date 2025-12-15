@@ -1,6 +1,8 @@
+import os
 from collections import defaultdict
 from heapq import heappop, heappush
 from typing import Any
+import logging
 
 import numpy as np
 from tqdm import tqdm
@@ -30,16 +32,18 @@ class MultiColumnOverlap(Seeker):
         # to include the inner joins with all the user required
         # columns for the multi-column search
         self.base_sql = """
-            SELECT firstcolumn.TableId, firstcolumn.RowId, firstcolumn.superkey, firstcolumn.CellValue,
-                    firstcolumn.ColumnId $OTHER_SELECT_COLUMNS$
+            SELECT firstcolumn.table_id, firstcolumn.row_id, firstcolumn.superkey, firstcolumn.cell_value,
+                    firstcolumn.column_id $OTHER_SELECT_COLUMNS$
             FROM (
-                SELECT TableId, RowId, CellValue, ColumnId, TO_BITSTRING(superkey) AS superkey
-                FROM AllTables
-                WHERE CellValue IN ($TOKENS$) $ADDITIONALS$
+                SELECT table_id, row_id, cell_value, column_id, TO_BITSTRING(superkey) AS superkey
+                FROM all_tables
+                WHERE cell_value IN ($TOKENS$) $ADDITIONALS$
                 ) AS firstcolumn $INNERJOINS$
         """
 
     def create_sql_query(self, db: DBHandler, additionals: str = "") -> str:
+        logger = logging.getLogger(f"blend_logger_{os.getpid()}")
+
         sql = self.base_sql.replace("$TOPK$", f"{self.k}")
 
         # The first column is treated outside the loop below
@@ -62,14 +66,14 @@ class MultiColumnOverlap(Seeker):
             innerjoins += f"""
                 INNER JOIN
                     (
-                        SELECT TableId, RowId, CellValue, ColumnId FROM AllTables
-                        WHERE CellValue IN ({sql_list_str})
+                        SELECT table_id, row_id, cell_value, column_id FROM all_tables
+                        WHERE cell_value IN ({sql_list_str})
                             $ADDITIONALS$
                     ) AS col_{column_name}
-                ON firstcolumn.TableId = col_{column_name}.TableID AND firstcolumn.RowId = col_{column_name}.RowId
+                ON firstcolumn.table_id = col_{column_name}.TableID AND firstcolumn.row_id = col_{column_name}.row_id
             """
 
-            # other_select_columns = f' , clm_{column_name}.CellValue, clm_{column_name}.ColumnId $OTHER_SELECT_COLUMNS$ '
+            # other_select_columns = f' , clm_{column_name}.cell_value, clm_{column_name}.column_id $OTHER_SELECT_COLUMNS$ '
             # sql = sql.replace('$OTHER_SELECT_COLUMNS$', other_select_columns)
 
         sql = sql.replace("$OTHER_SELECT_COLUMNS$", "")
@@ -79,7 +83,7 @@ class MultiColumnOverlap(Seeker):
         candidates = db.execute_and_fetchall(sql)
 
         if self.verbose:
-            print(f"#candidate rows = {len(candidates)}")
+            logger.debug(f"#candidate rows = {len(candidates)}")
 
         # Run the MATE specific filters to prune irrelevant results
         results = self.run_filter(
@@ -90,17 +94,17 @@ class MultiColumnOverlap(Seeker):
         )
 
         if self.verbose:
-            print(f"#filtered tables = {len(results)}")
+            logger.debug(f"#filtered tables = {len(results)}")
 
         if len(results) == 0:
-            return "SELECT * FROM AllTables WHERE 1 = 0;"
+            return "SELECT * FROM all_tables WHERE 1 = 0;"
 
         return f"""
-            SELECT TableId, JoinKeys, JoinabilityScore FROM (
+            SELECT table_id, JoinKeys, JoinabilityScore FROM (
             {
             " UNION ALL ".join(
                 [
-                    f"(SELECT '{table_id}' AS TableId, {
+                    f"(SELECT '{table_id}' AS table_id, {
                         list(map(int, join_keys.split('_')))
                     } AS JoinKeys, {joinability_score} AS JoinabilityScore)"
                     for table_id, join_keys, joinability_score in results[: self.k]
@@ -122,9 +126,12 @@ class MultiColumnOverlap(Seeker):
         xash_size: int = 128,
         verbose: bool = False,
     ) -> list[tuple[int, str, float]]:
+        logger = logging.getLogger(f"blend_logger_{os.getpid()}")
+
         # - Preprocessing
-        PL_dictionary = defaultdict(list)
-        PL_candidate_structure = {}
+        posting_lists_dict = defaultdict(list)
+        posting_lists_cand_struct = {}
+
         for tablerow_superkey in tqdm(
             posting_lists, desc="Preprocessing posting lists: ", disable=not verbose
         ):
@@ -139,8 +146,8 @@ class MultiColumnOverlap(Seeker):
             cols = [
                 tablerow_superkey[x] for x in np.arange(6, len(tablerow_superkey), 2)
             ]
-            PL_dictionary[table].append((row, superkey, token, colid))
-            PL_candidate_structure[(table, row)] = [tokens, cols]
+            posting_lists_dict[table].append((row, superkey, token, colid))
+            posting_lists_cand_struct[(table, row)] = [tokens, cols]
 
         top_joinable_tables = []  # each item includes: Tableid, joinable_rows
 
@@ -148,7 +155,7 @@ class MultiColumnOverlap(Seeker):
 
         # Calculate superkey for all input rows
         input_cpy = self.input.copy()
-        input_cpy["SuperKey"] = input_cpy.apply(
+        input_cpy["super_key"] = input_cpy.apply(
             lambda row: self.hash_row_vals(row, xash_size), axis=1
         )
 
@@ -167,14 +174,16 @@ class MultiColumnOverlap(Seeker):
         total_approved = 0
         total_match = 0
         overlaps_dict = {}
-        super_key_index = list(input_cpy.columns.values).index("SuperKey")
+        super_key_index = list(input_cpy.columns.values).index("super_key")
         checked_tables = 0
         max_table_check = 10000000
 
         for tableid in tqdm(
-            sorted(PL_dictionary, key=lambda k: len(PL_dictionary[k]), reverse=True)[
-                :max_table_check
-            ],
+            sorted(
+                posting_lists_dict,
+                key=lambda k: len(posting_lists_dict[k]),
+                reverse=True,
+            )[:max_table_check],
             desc="Checking candidate tables: ",
             disable=not verbose,
         ):
@@ -183,7 +192,7 @@ class MultiColumnOverlap(Seeker):
                 # pruned = True
                 break
             set_of_rowids = set()
-            hitting_PLs = PL_dictionary[tableid]
+            hitting_PLs = posting_lists_dict[tableid]
             if len(top_joinable_tables) >= self.k and top_joinable_tables[0][0] >= len(
                 hitting_PLs
             ):
@@ -220,12 +229,14 @@ class MultiColumnOverlap(Seeker):
                         candidate_table_ids.append(tableid)
                         candidate_table_rows.append((tableid, rowid))
 
-        if len(candidate_external_row_ids) == 0:
-            if verbose:
-                print("No candidate external row IDs found.")
+        if len(candidate_external_row_ids) == 0 and verbose:
+            logger.debug("No candidate external row IDs found.")
+
         if len(candidate_external_row_ids) > 0:
             if verbose:
-                print(f"#Candidate external row IDs: {len(candidate_external_row_ids)}")
+                logger.debug(
+                    f"#Candidate external row IDs: {len(candidate_external_row_ids)}"
+                )
 
             # We get a list of posting lists to evaluate as candidate matches, fetched
             # from the combination of the given table_id and row_id
@@ -236,7 +247,8 @@ class MultiColumnOverlap(Seeker):
             joint_distinct_tableids = tuple(map(str, set(candidate_table_ids)))
 
             candidate_table_rows_as_tuple = [
-                {"TableId": str(t[0]), "RowId": int(t[1])} for t in candidate_table_rows
+                {"table_id": str(t[0]), "row_id": int(t[1])}
+                for t in candidate_table_rows
             ]
 
             # NOTE: are joint_distinct_tableids and joint_distinct_row
@@ -244,14 +256,14 @@ class MultiColumnOverlap(Seeker):
             # thanks to the last WHERE-condition?
             query = """
             SELECT
-                TableId, RowId,
-                ColumnId, CellValue
+                table_id, row_id,
+                column_id, cell_value
             FROM (
                 SELECT *
-                FROM AllTables
-                WHERE TableId IN ?
-                AND RowId IN ?
-                AND (TableId, RowId) IN (SELECT UNNEST(?, recursive := True))
+                FROM all_tables
+                WHERE table_id IN ?
+                AND row_id IN ?
+                AND (table_id, row_id) IN (SELECT UNNEST(?, recursive := True))
             );
             """
 
@@ -267,7 +279,7 @@ class MultiColumnOverlap(Seeker):
             table_row_dict = defaultdict(dict)
 
             if verbose:
-                print("Evaluating remaining posting lists (fetch-yield)...")
+                logger.debug("Evaluating remaining posting lists (fetch-yield)...")
             for table_id, row_id, col_id, cell_value in pls_to_evaluate:
                 # here we are sure that (table_id, row_id) tuples are in candidate_table_rows,
                 # since this condition is used in the above SQL query

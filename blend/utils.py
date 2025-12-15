@@ -1,7 +1,13 @@
+import logging
+import os
+import queue
+import shutil
 from collections import Counter
 from functools import lru_cache
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
+from pathlib import Path
 from string import ascii_lowercase
-from typing import Any, Set, Optional
+from typing import Any, Optional, Set
 
 # The clean method is based on filtering a subset
 # of tokens that may be missed as Python "None",
@@ -79,3 +85,32 @@ def calculate_xash(token: str, hash_size: int = 128) -> int:
     result = result | length_bit
 
     return result
+
+
+def init_logger(log_directory: Path) -> tuple[logging.Logger, QueueListener]:
+    root = logging.getLogger(f"blend_logger_{os.getpid()}")
+    root.setLevel(logging.INFO)
+    q = queue.Queue(-1)
+    queue_handler = QueueHandler(q)
+    if root.hasHandlers():
+        root.handlers.clear()
+
+    old_dirs = sorted([d for d in os.listdir(log_directory.parent)], reverse=True)
+    dirs_to_delete = old_dirs[3:] if len(old_dirs) > 3 else []
+
+    for dir_to_delete in dirs_to_delete:
+        dir_path = log_directory.parent.joinpath(dir_to_delete)
+        shutil.rmtree(dir_path)
+
+    if not root.hasHandlers():
+        logfile = log_directory.joinpath(f"{os.getpid()}.log")
+        handler = RotatingFileHandler(logfile, mode="a", maxBytes=1024**3)
+        log_formatter = logging.Formatter(
+            "[%(asctime)s][%(process)d][%(threadName)s][%(levelname)s],%(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        handler.setFormatter(log_formatter)
+        root.addHandler(queue_handler)
+
+    listener = QueueListener(q, handler)
+    return root, listener

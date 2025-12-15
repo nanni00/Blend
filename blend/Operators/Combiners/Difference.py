@@ -1,6 +1,6 @@
 from ...DBHandler import DBHandler
-from .CombinerBase import Combiner
 from ..OperatorBase import Operator
+from .CombinerBase import Combiner
 
 
 class Difference(Combiner):
@@ -16,7 +16,7 @@ class Difference(Combiner):
     def create_sql_query(self, db: DBHandler, additionals: str = "") -> str:
         minus_results = self._inputs[1].run(additionals)
         additionals += (
-            f" AND TableId NOT IN ({db.create_sql_list_numeric(minus_results)}) "
+            f" AND table_id NOT IN ({db.create_sql_list_numeric(minus_results)}) "
             if minus_results
             else ""
         )

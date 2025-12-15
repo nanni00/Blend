@@ -5,7 +5,7 @@ from .CombinerBase import Combiner
 class Counter(Combiner):
     def create_sql_query(self, db: DBHandler, additionals: str = "") -> str:
         sql = """
-        SELECT TableId FROM (
+        SELECT table_id FROM (
         (
         """
         for i, input_ in enumerate(self._inputs):
@@ -16,8 +16,8 @@ class Counter(Combiner):
                 sql += "("
         sql += f"""
         ) AS {db.random_subquery_name()}
-        GROUP BY TableId
-        ORDER BY COUNT(TableId) DESC
+        GROUP BY table_id
+        ORDER BY COUNT(table_id) DESC
         LIMIT {self.k}
         """
 

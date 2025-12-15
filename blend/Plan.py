@@ -1,5 +1,5 @@
 # Typing imports
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, Optional
 
 from .DBHandler import DBHandler
 from .Operators import Combiner, Operator, Seeker
@@ -10,7 +10,7 @@ class Plan(object):
         # self.DB = DBHandler()
         self.DB = db
         self._operators = dict()
-        self._terminal_candidates: Set[str] = set()
+        self._terminal_candidates: set[str] = set()
 
     def add(
         self, name: str, operator: Operator, inputs: Optional[Iterable[str]] = None
@@ -48,7 +48,7 @@ class Plan(object):
         self._operators[name] = operator
         self._terminal_candidates -= set(inputs)
 
-    def run(self) -> List:
+    def run(self) -> list:
         """Run the plan."""
         if len(self._terminal_candidates) == 0:
             raise ValueError("No terminal candidates found.")

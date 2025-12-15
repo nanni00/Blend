@@ -42,47 +42,47 @@ class Correlation(Seeker):
         # are only interested in the order of the resutls
         self.base_sql = f"""
             SELECT 
-                TableId, 
+                table_id, 
                 catcol, 
                 numcol,
                 qcr
             FROM (
-                SELECT TableId, catcol, numcol, 
-                        (2 * SUM((CellValue IN ($TRUETOKENS$) = Quadrant)::INT) - COUNT(*)) AS score,
-                        (2 * SUM((CellValue IN ($TRUETOKENS$) = Quadrant)::INT) - COUNT(*)) / COUNT(*) AS qcr,
+                SELECT table_id, catcol, numcol, 
+                        (2 * SUM((cell_value IN ($TRUETOKENS$) = quadrant)::INT) - COUNT(*)) AS score,
+                        (2 * SUM((cell_value IN ($TRUETOKENS$) = quadrant)::INT) - COUNT(*)) / COUNT(*) AS qcr,
                 FROM (
                     SELECT
-                        categorical.CellValue,
-                        categorical.TableId,
-                        categorical.ColumnId catcol,
-                        numerical.ColumnId numcol,
-                        SUM(numerical.Quadrant::INT) / COUNT(*) > 0.5 AS Quadrant,
-                        COUNT(DISTINCT numerical.CellValue) AS num_unique,
-                        MIN(numerical.CellValue) AS any_cellvalue
+                        categorical.cell_value,
+                        categorical.table_id,
+                        categorical.column_id catcol,
+                        numerical.column_id numcol,
+                        SUM(numerical.quadrant::INT) / COUNT(*) > 0.5 AS quadrant,
+                        COUNT(DISTINCT numerical.cell_value) AS num_unique,
+                        MIN(numerical.cell_value) AS any_cellvalue
                     FROM (
                         SELECT * 
-                        FROM AllTables 
+                        FROM all_tables 
                         WHERE 
-                            RowId < {self.hash_size}
+                            row_id < {self.hash_size}
                         AND (
-                                CellValue IN ($FALSETOKENS$)
+                                cell_value IN ($FALSETOKENS$)
                             OR 
-                                CellValue IN ($TRUETOKENS$)
+                                cell_value IN ($TRUETOKENS$)
                             ) $ADDITIONALS$
                         ) categorical
                     JOIN (
                         SELECT * 
-                        FROM AllTables 
+                        FROM all_tables 
                         WHERE 
-                            RowId < {self.hash_size}
+                            row_id < {self.hash_size}
                         AND 
-                            Quadrant IS NOT NULL $ADDITIONALS$
+                            quadrant IS NOT NULL $ADDITIONALS$
                         ) numerical
-                    ON categorical.TableId = numerical.TableId 
-                    AND categorical.RowId = numerical.RowId
-                    GROUP BY categorical.TableId, categorical.ColumnId, numerical.ColumnId, categorical.CellValue
+                    ON categorical.table_id = numerical.table_id 
+                    AND categorical.row_id = numerical.row_id
+                    GROUP BY categorical.table_id, categorical.column_id, numerical.column_id, categorical.cell_value
                 ) grouped_cellvalues
-                GROUP BY TableId, catcol, numcol
+                GROUP BY table_id, catcol, numcol
                 HAVING 
                     COUNT(*) > 1 
                 AND (

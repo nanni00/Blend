@@ -9,10 +9,10 @@ class Keyword(Seeker):
         super().__init__(k)
         self.input = set(input_query_values)
         self.base_sql = """
-        SELECT TableId, COUNT(DISTINCT CellValue) FROM AllTables
-        WHERE CellValue IN ($TOKENS$) $ADDITIONALS$
-        GROUP BY TableId
-        ORDER BY COUNT(DISTINCT CellValue) DESC
+        SELECT table_id, COUNT(DISTINCT cell_value) FROM all_tables
+        WHERE cell_value IN ($TOKENS$) $ADDITIONALS$
+        GROUP BY table_id
+        ORDER BY COUNT(DISTINCT cell_value) DESC
         LIMIT $TOPK$
         """
 

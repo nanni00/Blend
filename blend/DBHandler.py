@@ -1,7 +1,7 @@
 import random
 from numbers import Number
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, Union, Any
+from typing import Iterable, Optional, Union, Any
 
 import duckdb
 import pandas as pd
@@ -28,7 +28,7 @@ class DBHandler(object):
                 f"DB directory doesn't exist: {self.db_path.parent}"
             )
 
-        self.index_table = index_table if isinstance(index_table, str) else "AllTables"
+        self.index_table = index_table if isinstance(index_table, str) else "all_tables"
         self.db_name = self.db_path.stem.replace("-", "_")
 
         self.use_ml_optimizer = use_ml_optimizer
@@ -57,39 +57,21 @@ class DBHandler(object):
         with duckdb.connect(self.db_path) as con:
             con.sql(f"""
                 CREATE TABLE {self.index_table} (
-                CellValue           VARCHAR,
-                TableId             VARCHAR,
-                ColumnId            UINTEGER,
-                RowId               UINTEGER,
-                Quadrant            BOOLEAN,
-                SuperKey            BYTEA,
-                PRIMARY KEY (TableId, ColumnId, RowId)
+                cell_value           VARCHAR,
+                table_id             VARCHAR,
+                column_id            UINTEGER,
+                row_id               UINTEGER,
+                quadrant             BOOLEAN,
+                super_key            BYTEA,
+                PRIMARY KEY (table_id, column_id, row_id)
             );""")
 
     def create_column_indexes(self):
         with duckdb.connect(self.db_path) as con:
-            con.sql(f"CREATE INDEX TableId_idx ON {self.index_table} (TableId);")
-            con.sql(f"CREATE INDEX CellValue_idx ON {self.index_table} (CellValue);")
+            con.sql(f"CREATE INDEX table_id_idx ON {self.index_table} (table_id);")
+            con.sql(f"CREATE INDEX cell_value_idx ON {self.index_table} (cell_value);")
 
-    def save_data_to_duckdb(self, data: Dict | pl.DataFrame):
-        # schema = [
-        #     ("CellValue", pl.String),
-        #     ("TableId", pl.String),
-        #     ("ColumnId", pl.UInt32),
-        #     ("RowId", pl.UInt32),
-        #     ("Quadrant", pl.Boolean),
-        #     ("SuperKey", pl.Binary),
-        # ]
-        #
-        # # TODO: with pl.Series, maybe the lazy
-        # # computation here is not correctly adopted
-        # data = pl.LazyFrame(
-        #     # [pl.Series(c, data[c], d) for c, d in schema],
-        #     {c: data[c] for c, _ in schema},
-        #     schema=schema,
-        #     orient="col",
-        # )
-
+    def save_data_to_duckdb(self, data: dict | pl.DataFrame):
         with duckdb.connect(self.db_path) as con:
             con.sql(f"INSERT INTO {self.index_table} SELECT * FROM data;")
 
@@ -97,54 +79,44 @@ class DBHandler(object):
         pass
 
     def clean_query(self, query: str) -> str:
-        """Replaces the 'AllTables' index name"""
-        return query.replace("AllTables", f"{self.index_table}")
+        """Replaces the 'all_tables' index name"""
+        return query.replace("all_tables", f"{self.index_table}")
 
-    def execute_and_fetchall(self, query: str) -> List[Union[Tuple, List]]:
+    def execute_and_fetchall(self, query: str) -> list[Union[tuple, list]]:
         """Returns results"""
         query = self.clean_query(query)
         query = query.replace("TO_BITSTRING(superkey)", "superkey")
 
-        try:
-            with duckdb.connect(self.db_path, read_only=True) as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute(query)
-                    results = cursor.fetchall()
-        except Exception as e:
-            print(query)
-            raise e
-
-        return results
+        with duckdb.connect(self.db_path, read_only=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                return cursor.fetchall()
 
     def execute_and_fetchyield(self, query: str, params: Optional[tuple] = None):
         query = self.clean_query(query)
         query = query.replace("TO_BITSTRING(superkey)", "superkey")
 
-        try:
-            with duckdb.connect(self.db_path, read_only=True) as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute(query, params)
-                    while rows := cursor.fetchmany(size=1000):
-                        for row in rows:
-                            yield row
-        except Exception as e:
-            print(f'Failure with query "{query}": {e}')
-            raise e
+        with duckdb.connect(self.db_path, read_only=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query, params)
+                while rows := cursor.fetchmany(size=1000):
+                    for row in rows:
+                        yield row
 
     def get_table_from_index(self, table_id: int) -> pd.DataFrame | pl.DataFrame:
         sql = f"""
-        SELECT CellValue, ColumnId, RowId
-        FROM AllTables
-        WHERE TableId = {table_id}
+        SELECT cell_value, column_id, row_id
+        FROM all_tables
+        WHERE table_id = {table_id}
         """
 
         results = self.execute_and_fetchall(sql)
 
         df = pd.DataFrame(
-            results, columns=["CellValue", "ColumnId", "RowId"], dtype=str
+            results, columns=["cell_value", "column_id", "row_id"], dtype=str
         )
         df = df.drop_duplicates()
-        df = df.pivot(index="RowId", columns="ColumnId", values="CellValue")
+        df = df.pivot(index="row_id", columns="column_id", values="cell_value")
         df.index.name = None
         df.columns.name = None
 
@@ -152,20 +124,20 @@ class DBHandler(object):
 
         return df
 
-    def table_ids_to_sql(self, table_ids: List[int]) -> str:
+    def table_ids_to_sql(self, table_ids: list[int]) -> str:
         if len(table_ids) == 0:
-            return "SELECT 0 AS TableId WHERE 1 = 0"
+            return "SELECT 0 AS table_id WHERE 1 = 0"
 
         if self.dbms == "postgres":
             return f"""
             SELECT * FROM (
                 VALUES {" ,".join([f"('{table_id}')" for table_id in table_ids])}
-            ) AS {DBHandler.random_subquery_name()}(TableId)
+            ) AS {DBHandler.random_subquery_name()}(table_id)
             """
 
         return f"""
-            SELECT TableId FROM (
-            {" UNION ALL ".join([f"SELECT '{table_id}' AS TableId" for table_id in table_ids])}
+            SELECT table_id FROM (
+            {" UNION ALL ".join([f"SELECT '{table_id}' AS table_id" for table_id in table_ids])}
             ) AS {DBHandler.random_subquery_name()}
         """
 
@@ -175,12 +147,12 @@ class DBHandler(object):
         return {token: self.frequency_dict.get(token, 1) for token in tokens}
 
     def remove_table_from_index(self, table_id: str):
-        sql = f"DELETE FROM AllTables WHERE TableId = '{table_id}'"
+        sql = f"DELETE FROM all_tables WHERE table_id = '{table_id}'"
 
         self.execute_and_fetchall(sql)
 
     @staticmethod
-    def clean_value_collection(values: Iterable[Any]) -> List[str]:
+    def clean_value_collection(values: Iterable[Any]) -> list[str]:
         return [
             str(v).replace("'", "''").strip() for v in values if str(v).lower() != "nan"
         ]

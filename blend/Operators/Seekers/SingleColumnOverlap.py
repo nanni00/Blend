@@ -13,12 +13,12 @@ class SingleColumnOverlap(Seeker):
         # The final output results list is sorted by
         # the COUNT(DISTINCT), applying a set semantic
         self.base_sql = """
-        SELECT TableId, ColumnId, 
-            COUNT(DISTINCT CellValue) AS DistinctTokensCount, 
-            COUNT(CellValue) AS TokensCount FROM AllTables
-        WHERE CellValue IN ($TOKENS$) $ADDITIONALS$
-        GROUP BY TableId, ColumnId
-        ORDER BY COUNT(DISTINCT CellValue) DESC
+        SELECT table_id, column_id, 
+            COUNT(DISTINCT cell_value) AS DistinctTokensCount, 
+            COUNT(cell_value) AS TokensCount FROM all_tables
+        WHERE cell_value IN ($TOKENS$) $ADDITIONALS$
+        GROUP BY table_id, column_id
+        ORDER BY COUNT(DISTINCT cell_value) DESC
         LIMIT $TOPK$
         """
 

@@ -1,16 +1,21 @@
+from typing import Optional
 from abc import ABC, abstractmethod
-from typing import List
 
 from ..DBHandler import DBHandler
 
 
 class Operator(ABC):
-    DB: DBHandler | None = None  # DBHandler()
+    DB: Optional[DBHandler] = None
 
     def __init__(self, k: int):
         self.k = k
 
-    def run(self, additionals: str = "") -> List[int]:
+    def run(self, additionals: str = "") -> list:
+        if self.DB is None:
+            raise TypeError(
+                "DBHandler is None. Database hanlder has not been initialized yet."
+            )
+
         sql = self.create_sql_query(self.DB, additionals=additionals)
         result = self.DB.execute_and_fetchall(sql)
         return [r for r in result[: self.k]]

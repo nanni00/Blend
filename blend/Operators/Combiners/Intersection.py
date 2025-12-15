@@ -29,7 +29,7 @@ class Intersection(Combiner):
             result = input_.run(additionals + intersect_additionals)
             print(input, len(result))
             if len(result) == 0:
-                return "SELECT TableId FROM AllTables WHERE 1=0"
+                return "SELECT table_id FROM all_tables WHERE 1=0"
 
             # for those cases were is not returned a simple list
             # of TableIDs (like MultiColumnSeeker) extract only them
@@ -37,8 +37,8 @@ class Intersection(Combiner):
                 result = [r[0] for r in result]
 
             intersect_additionals = (
-                # f" AND TableId IN ({db.create_sql_list_numeric(result)}) "
-                f" AND TableId IN ({db.create_sql_list_str(result)}) "
+                # f" AND table_id IN ({db.create_sql_list_numeric(result)}) "
+                f" AND table_id IN ({db.create_sql_list_str(result)}) "
             )
 
         sorted_inputs[-1].k = self.k
