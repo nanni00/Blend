@@ -1,20 +1,12 @@
-[build-system]
-requires = ["setuptools >= 77.0.3"]
-build-backend = "setuptools.build_meta"
-
 [project]
-maintainers = [
-  { name = "Giovanni Malaguti", email = "giovanni.malaguti00@gmail.com" },
-]
-name = "Blend"
-version = "0.1"
+name = "blend"
+version = "0.1.0"
 description = "Fork of \"The repository for Blend, a holistic data discovery system\""
-
-requires-python = ">=3.12"
-
+readme = "README.md"
+requires-python = ">=3.11"
 dependencies = [
+  "duckdb>=1.4.3",
   "pandas>=2.3.3",
-  "polars>=1.35.2",
-  "duckdb>=1.4.1",
-  "tqdm==4.67.1",
+  "polars>=1.36.1",
+  "tqdm>=4.67.1",
 ]

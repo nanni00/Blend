@@ -166,8 +166,7 @@ def _process_task(
         with lock:
             db_handler.save_data_to_duckdb(df_or_error)
         return table_id, True
-    else:
-        return table_id, False
+    return table_id, False
 
 
 class BLEND:
