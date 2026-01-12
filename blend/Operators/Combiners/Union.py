@@ -17,4 +17,6 @@ class Union(Combiner):
         LIMIT {self.k}
         """
 
+        print(sql)
+
         return sql

@@ -46,14 +46,14 @@ class DBHandler(object):
         else:
             self.frequency_dict = {}
 
-    def drop_table(self):
+    def drop_index_table(self):
         with duckdb.connect(self.db_path) as con:
             con.sql(f"""
                 DROP TABLE IF EXISTS {self.index_table} CASCADE;
                 CHECKPOINT {self.db_name};
             """)
 
-    def create_table(self):
+    def create_index_table(self):
         with duckdb.connect(self.db_path) as con:
             con.sql(f"""
                 CREATE TABLE {self.index_table} (
@@ -85,7 +85,7 @@ class DBHandler(object):
     def execute_and_fetchall(self, query: str) -> list[Union[tuple, list]]:
         """Returns results"""
         query = self.clean_query(query)
-        query = query.replace("TO_BITSTRING(superkey)", "superkey")
+        query = query.replace("TO_BITSTRING(super_key)", "super_key")
 
         with duckdb.connect(self.db_path, read_only=True) as connection:
             with connection.cursor() as cursor:
@@ -94,7 +94,7 @@ class DBHandler(object):
 
     def execute_and_fetchyield(self, query: str, params: Optional[tuple] = None):
         query = self.clean_query(query)
-        query = query.replace("TO_BITSTRING(superkey)", "superkey")
+        query = query.replace("TO_BITSTRING(super_key)", "super_key")
 
         with duckdb.connect(self.db_path, read_only=True) as connection:
             with connection.cursor() as cursor:
@@ -103,7 +103,7 @@ class DBHandler(object):
                     for row in rows:
                         yield row
 
-    def get_table_from_index(self, table_id: int) -> pd.DataFrame | pl.DataFrame:
+    def get_table_from_index(self, table_id: str) -> pd.DataFrame | pl.DataFrame:
         sql = f"""
         SELECT cell_value, column_id, row_id
         FROM all_tables

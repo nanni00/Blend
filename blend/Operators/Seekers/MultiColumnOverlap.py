@@ -32,10 +32,10 @@ class MultiColumnOverlap(Seeker):
         # to include the inner joins with all the user required
         # columns for the multi-column search
         self.base_sql = """
-            SELECT firstcolumn.table_id, firstcolumn.row_id, firstcolumn.superkey, firstcolumn.cell_value,
+            SELECT firstcolumn.table_id, firstcolumn.row_id, firstcolumn.super_key, firstcolumn.cell_value,
                     firstcolumn.column_id $OTHER_SELECT_COLUMNS$
             FROM (
-                SELECT table_id, row_id, cell_value, column_id, TO_BITSTRING(superkey) AS superkey
+                SELECT table_id, row_id, cell_value, column_id, TO_BITSTRING(super_key) AS super_key
                 FROM all_tables
                 WHERE cell_value IN ($TOKENS$) $ADDITIONALS$
                 ) AS firstcolumn $INNERJOINS$
@@ -70,7 +70,7 @@ class MultiColumnOverlap(Seeker):
                         WHERE cell_value IN ({sql_list_str})
                             $ADDITIONALS$
                     ) AS col_{column_name}
-                ON firstcolumn.table_id = col_{column_name}.TableID AND firstcolumn.row_id = col_{column_name}.row_id
+                ON firstcolumn.table_id = col_{column_name}.table_iD AND firstcolumn.row_id = col_{column_name}.row_id
             """
 
             # other_select_columns = f' , clm_{column_name}.cell_value, clm_{column_name}.column_id $OTHER_SELECT_COLUMNS$ '
@@ -99,18 +99,23 @@ class MultiColumnOverlap(Seeker):
         if len(results) == 0:
             return "SELECT * FROM all_tables WHERE 1 = 0;"
 
+        # split the join keys field and map the keys to integers
+        results = [
+            (table_id, list(map(int, join_keys.split("_"))), joinability_score)
+            for table_id, join_keys, joinability_score in results[: self.k]
+        ]
+
+        # union the results from all the subqueries
+        unioned_queries = " UNION ALL ".join(
+            [
+                f"(SELECT '{table_id}' AS table_id, {join_keys} AS join_keys, {joinability_score} AS joinability_score)"
+                for table_id, join_keys, joinability_score in results[: self.k]
+            ]
+        )
+
         return f"""
-            SELECT table_id, JoinKeys, JoinabilityScore FROM (
-            {
-            " UNION ALL ".join(
-                [
-                    f"(SELECT '{table_id}' AS table_id, {
-                        list(map(int, join_keys.split('_')))
-                    } AS JoinKeys, {joinability_score} AS JoinabilityScore)"
-                    for table_id, join_keys, joinability_score in results[: self.k]
-                ]
-            )
-        }) AS ResultsSelection
+            SELECT table_id, join_keys, joinability_score
+            FROM ({unioned_queries}) AS ResultsSelection
         """
 
     def cost(self) -> int:

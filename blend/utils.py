@@ -1,3 +1,4 @@
+import sys
 import logging
 import os
 import queue
@@ -7,7 +8,10 @@ from functools import lru_cache
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 from string import ascii_lowercase
-from typing import Any, Optional, Set
+from typing import Any, Callable, Optional, Set
+
+import polars as pl
+import polars.selectors as cs
 
 # The clean method is based on filtering a subset
 # of tokens that may be missed as Python "None",
@@ -87,30 +91,149 @@ def calculate_xash(token: str, hash_size: int = 128) -> int:
     return result
 
 
-def init_logger(log_directory: Path) -> tuple[logging.Logger, QueueListener]:
-    root = logging.getLogger(f"blend_logger_{os.getpid()}")
-    root.setLevel(logging.INFO)
-    q = queue.Queue(-1)
-    queue_handler = QueueHandler(q)
-    if root.hasHandlers():
-        root.handlers.clear()
+def init_logger(logfile: Optional[Path] = None, stdout: bool = False):
+    logger = logging.getLogger("JOSIE")
+    logger.setLevel(logging.DEBUG)
 
-    old_dirs = sorted([d for d in os.listdir(log_directory.parent)], reverse=True)
-    dirs_to_delete = old_dirs[3:] if len(old_dirs) > 3 else []
+    formatter = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
-    for dir_to_delete in dirs_to_delete:
-        dir_path = log_directory.parent.joinpath(dir_to_delete)
-        shutil.rmtree(dir_path)
+    if logfile and not any(
+        isinstance(handler, logging.FileHandler) for handler in logger.handlers
+    ):
+        file_handler = logging.FileHandler(logfile)
+        file_handler.setLevel(logging.DEBUG)  # Set minimum level for file
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
 
-    if not root.hasHandlers():
-        logfile = log_directory.joinpath(f"{os.getpid()}.log")
-        handler = RotatingFileHandler(logfile, mode="a", maxBytes=1024**3)
-        log_formatter = logging.Formatter(
-            "[%(asctime)s][%(process)d][%(threadName)s][%(levelname)s],%(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
+    if stdout and not any(
+        isinstance(handler, logging.StreamHandler) for handler in logger.handlers
+    ):
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)  # Set minimum level for console
+        console_handler.setFormatter(formatter)
+
+        logger.addHandler(console_handler)
+
+    return logger
+
+
+def parse_table(
+    table_path: Path,
+    scan_table_opts: dict,
+    clean_function: Callable,
+    clean_function_args: dict,
+    xash_size: int,
+    disable_xash: bool,
+) -> tuple[str, pl.DataFrame | str]:
+    table_id = table_path.stem
+    format = table_path.suffix.replace(".", "")
+
+    try:
+        match format:
+            case "csv":
+                table_df = pl.scan_csv(table_path, **scan_table_opts)
+            case "parquet":
+                table_df = pl.scan_parquet(table_path, **scan_table_opts)
+            case _:
+                raise ValueError(f"Unknown table format in {table_path}: {format}")
+
+        # we need to keep track of the real row index of each record
+        # even after dropping nulls, thus we create a new column to this aim
+        table_df = table_df.with_row_index(name="blend_row_index")
+
+        # in this way we drop only those rows that have all values nulls,
+        # except for the configured row index
+        table_df = table_df.filter(
+            ~pl.all_horizontal(pl.all().exclude("blend_row_index").is_null())
+        ).collect()
+
+        if table_df.shape[0] * table_df.shape[1] == 0:
+            raise pl.exceptions.NoDataError("Empty table.")
+
+    except (
+        pl.exceptions.ComputeError,
+        pl.exceptions.SchemaError,
+        pl.exceptions.NoDataError,
+        ValueError,
+    ) as e:
+        return table_id, f"{type(e)}::{str(e)}"
+
+    # identify the numeric columns for the correlation part
+    numeric_cols = set(table_df.select(cs.numeric()).columns)
+    columns_df = []
+
+    for col_counter, col_name in enumerate(table_df.columns[1:]):
+        # to insert this column values, select also the row index
+        column = table_df.select("blend_row_index", col_name)
+
+        if hasattr(clean_function, "__vectorized__"):
+            cleaned = column.select(
+                pl.col(col_name)
+                .map_elements(
+                    lambda x: clean_function(x, **clean_function_args),
+                    return_dtype=pl.String,
+                )
+                .alias("cell_value")
+            )
+        else:
+            cleaned = pl.Series(
+                "cell_value",
+                [
+                    clean_function(item, **clean_function_args)
+                    for row_counter, item in column.rows()
+                ],
+            )
+
+        result_df = column.with_columns(
+            [
+                cleaned,
+                pl.lit(table_id).alias("table_id"),
+                pl.lit(col_counter).alias("column_id"),
+                pl.col("blend_row_index").alias("row_id"),
+            ]
         )
-        handler.setFormatter(log_formatter)
-        root.addHandler(queue_handler)
 
-    listener = QueueListener(q, handler)
-    return root, listener
+        is_numeric = col_name in numeric_cols
+        if is_numeric:
+            mean = column.select(col_name).to_series().mean()
+            result_df = result_df.with_columns(
+                pl.when(pl.col(col_name).is_not_null())
+                .then(pl.col(col_name) >= mean)
+                .otherwise(None)
+                .alias("quadrant")
+            )
+        else:
+            result_df = result_df.with_columns(
+                pl.lit(None).cast(pl.Boolean).alias("quadrant")
+            )
+
+        columns_df.append(result_df.drop("blend_row_index", col_name))
+
+    all_data = pl.concat(columns_df)
+
+    if disable_xash:
+        final_data = all_data.with_columns(pl.lit(int(0).to_bytes(), pl.Binary))
+    else:
+        superkey_data = all_data.group_by("row_id").agg(
+            pl.map_groups(
+                ["cell_value"],
+                lambda values: calculate_superkey_for_row(
+                    values[0].to_list(), xash_size
+                ),
+                return_dtype=pl.Binary,
+                returns_scalar=True,
+            ).alias("super_key")
+        )
+
+        final_data = all_data.join(superkey_data, on="row_id")
+
+    return table_id, final_data
+
+
+def calculate_superkey_for_row(cell_values: list, xash_size: int) -> bytes:
+    superkey = 0
+    for value in cell_values:
+        superkey |= calculate_xash(value, xash_size)
+    return bytes(f"{superkey:0128b}".encode())

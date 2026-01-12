@@ -14,8 +14,8 @@ class SingleColumnOverlap(Seeker):
         # the COUNT(DISTINCT), applying a set semantic
         self.base_sql = """
         SELECT table_id, column_id, 
-            COUNT(DISTINCT cell_value) AS DistinctTokensCount, 
-            COUNT(cell_value) AS TokensCount FROM all_tables
+            COUNT(DISTINCT cell_value) AS TokensCount, 
+            FROM all_tables
         WHERE cell_value IN ($TOKENS$) $ADDITIONALS$
         GROUP BY table_id, column_id
         ORDER BY COUNT(DISTINCT cell_value) DESC

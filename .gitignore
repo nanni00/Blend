@@ -1,6 +1,10 @@
 # Custom
 .gitignore
 __pycache__
+**.db
+
+**undata
+**modena
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
