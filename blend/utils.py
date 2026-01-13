@@ -1,35 +1,36 @@
 import logging
+import string
 import sys
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
-from string import ascii_lowercase
-from typing import Any, Callable, Optional, Set
+from typing import Any, Callable, Optional
 
 import polars as pl
 import polars.selectors as cs
 
-# The clean method is based on filtering a subset
-# of tokens that may be missed as Python "None",
-# and on dropping some bad characters
-chars_to_replace = "\\\n\t\r'\""
-translator = str.maketrans(chars_to_replace, " " * len(chars_to_replace))
+whitespace_translator = str.maketrans(string.whitespace, " " * len(string.whitespace))
 
 
 @lru_cache(maxsize=1_000)
-def clean(s: Any, level: int = 0, bad_tokens: Optional[Set] = {"nan", "null", "none"}):
-    match level:
-        case 0:
-            return str(s)
-        case 1:
-            return str(s).lower().strip()
-        case 2:
-            return str(s).lower().translate(translator).strip()
-        case 3:
-            s = str(s).lower().translate(translator).strip()
-            return s if not bad_tokens or (bad_tokens and s not in bad_tokens) else ""
-        case _:
-            raise ValueError(f"Clean level must be within 0 and 3: {level}")
+def clean(
+    s: Any,
+    lowercase: bool = False,
+    replace_whitespaces: bool = False,
+    replace_custom: Optional[dict] = None,
+    filter_bad_tokens: bool = False,
+    bad_tokens: Optional[set] = {"nan", "null", "none"},
+):
+    s = str(s)
+    if lowercase:
+        s = s.lower()
+    if replace_whitespaces:
+        s = s.translate(whitespace_translator)
+    if replace_custom:
+        s = s.translate(replace_custom)
+    if bad_tokens and s in bad_tokens:
+        return ""
+    return s.strip()
 
 
 @lru_cache(maxsize=1_000)
@@ -40,7 +41,7 @@ def calculate_xash(token: str, hash_size: int = 128) -> int:
     """
 
     number_of_ones = 5
-    char = list(ascii_lowercase + "0123456789" + " ")
+    char = list(string.ascii_lowercase + string.digits + " ")
 
     segment_size_dict = {64: 1, 128: 3, 256: 6, 512: 13}
     segment_size = segment_size_dict[hash_size]

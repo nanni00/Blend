@@ -14,6 +14,9 @@ from ...db import DBHandler
 from ...utils import calculate_xash
 from .seeker_base import Seeker
 
+TQDM_NCOLS = 120
+TQDM_RIGHT_PAD = 31
+
 
 class MultiColumnOverlap(Seeker):
     def __init__(
@@ -138,7 +141,10 @@ class MultiColumnOverlap(Seeker):
         posting_lists_cand_struct = {}
 
         for tablerow_superkey in tqdm(
-            posting_lists, desc="Preprocessing posting lists: ", disable=not verbose
+            posting_lists,
+            desc="Preprocessing posting lists".ljust(TQDM_RIGHT_PAD, " "),
+            disable=not verbose,
+            ncols=TQDM_NCOLS,
         ):
             table = tablerow_superkey[0]
             row = tablerow_superkey[1]
@@ -189,8 +195,9 @@ class MultiColumnOverlap(Seeker):
                 key=lambda k: len(posting_lists_dict[k]),
                 reverse=True,
             )[:max_table_check],
-            desc="Checking candidate tables: ",
+            desc="Checking candidate tables".ljust(TQDM_RIGHT_PAD, " "),
             disable=not verbose,
+            ncols=TQDM_NCOLS,
         ):
             checked_tables += 1
             if checked_tables == max_table_check:
@@ -207,9 +214,10 @@ class MultiColumnOverlap(Seeker):
 
             for hit in tqdm(
                 sorted(hitting_PLs),
-                desc="Checking Hits: ",
+                desc="Checking Hits".ljust(TQDM_RIGHT_PAD, " "),
                 disable=not verbose,
                 leave=False,
+                ncols=TQDM_NCOLS,
             ):
                 if len(top_joinable_tables) >= self.k and (
                     (len(hitting_PLs) - already_checked_hits + len(set_of_rowids))
@@ -292,8 +300,9 @@ class MultiColumnOverlap(Seeker):
 
             for i in tqdm(
                 range(len(candidate_table_rows)),
-                desc="Evaluating candidate table rows",
+                desc="Evaluating candidate table rows".ljust(TQDM_RIGHT_PAD, " "),
                 total=len(candidate_table_rows),
+                ncols=TQDM_NCOLS,
                 disable=not verbose,
             ):
                 if candidate_table_rows[i] not in table_row_dict:

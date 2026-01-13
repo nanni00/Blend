@@ -1,6 +1,6 @@
 from numbers import Number
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 
 import pandas as pd
 import polars as pl
@@ -50,48 +50,66 @@ class BLEND:
     def close(self):
         self.db_handler.close()
 
-    def keyword_search(self, values: list[str], k: int):
+    def keyword_search(self, values: list[Any], k: int, clean: bool = True):
         """
         Execute a keyword search on the given query values.
 
-        :param values: a list of string keywords.
-            These values are assumed to be already cleaned and formatted.
+        :param values: A list of string keywords.
         :param k: The number of results to return.
+        :param clean: If True, apply the default clean function on the input values.
         :return: A list of tuples <table id, overlap size (distinct)>.
         """
+        if clean:
+            values = [
+                self._clean_function(v, **self._clean_function_args) for v in values
+            ]
         plan = Plan(self.db_handler)
         plan.add("keyword", seekers.K(values, k))
 
         return plan.run()
 
     def single_column_join_search(
-        self, column: list[str], k: int
+        self, column: list[Any], k: int, clean: bool = True
     ) -> list[tuple[str, int, int]]:
         """
         Execute a single-column join search on the given column values.
 
         :param column: a list of strings representing the query column.
-            These values are assumed to be already cleaned and formatted.
         :param k: The number of results to return.
+        :param clean: If True, apply the default clean function on the input values.
         :return: A list of tuples <table id, column number, overlap size (distinct)>.
         """
+        if clean:
+            column = [
+                self._clean_function(cell, **self._clean_function_args)
+                for cell in column
+            ]
         plan = Plan(self.db_handler)
         plan.add("single_column_join", seekers.SC(column, k))
 
         return plan.run()
 
     def multi_column_join_search(
-        self, table: list[list[str]], k: int, verbose: bool = False
+        self, table: list[list[Any]], k: int, clean: bool = True, verbose: bool = False
     ) -> list[tuple[str, list, float]]:
         """
         Execute a multi-column join search on the given table.
         This method is built on top of the MATE discovery algorithm.
 
-        :param table: A list-of-rows representing a table. The values is assumed are already cleaned.
+        :param table: A list-of-rows representing a table.
         :param k: The number of results to return.
+        :param clean: If True, apply the default clean function on the input values.
         :param verbose:
         :return: A list of tuples <table id, column numbers, joinability score>
         """
+        if clean:
+            table = [
+                [
+                    self._clean_function(cell, **self._clean_function_args)
+                    for cell in row
+                ]
+                for row in table
+            ]
         df = pd.DataFrame(table)
 
         plan = Plan(self.db_handler)
@@ -100,10 +118,11 @@ class BLEND:
 
     def correlation_search(
         self,
-        keys: list[str],
+        keys: list[Any],
         targets: list[Number],
         k: int = 10,
         hash_size: int = 256,
+        clean: bool = True,
         verbose: bool = False,
     ):
         """
@@ -114,29 +133,45 @@ class BLEND:
         :param targets: A list of numbers representing a target column.
         :param k: The number of results to return.
         :param hash_size: The dimension of the hash size used by the QCR approach.
+        :param clean: If True, apply the default clean function on the input values.
         :param verbose:
         """
+        if clean:
+            keys = [self._clean_function(k, **self._clean_function_args) for k in keys]
+
         plan = Plan(self.db_handler)
         plan.add("correlation", seekers.C(keys, targets, k, hash_size))
 
         return plan.run()
 
-    def union_search(self, table: list[list[str]], k: int):
+    def union_search(self, table: list[list[Any]], k: int, clean: bool = True):
         """
         Execute a union search on the given table.
         This method exeutes a union of the results given by a single-column search
         on all the table columns.
 
-        :param table: A list-of-rows representing a table. The values is assumed that are already cleaned.
+        :param table: A list-of-rows representing a table.
         :param k: The number of results to return.
+        :param clean: If True, apply the default clean function on the input values.
         """
+        if clean:
+            table = [
+                [
+                    self._clean_function(cell, **self._clean_function_args)
+                    for cell in row
+                ]
+                for row in table
+            ]
 
-        df = pd.DataFrame(table)
+        # switch to a list-of-columns view of the table
+        table = list(zip(*table))
 
         plan = Plan(self.db_handler)
-        for clm_name in df.columns:
-            plan.add(clm_name, seekers.SC(df[clm_name], k * 10))
+        for n_column, column in enumerate(table):
+            plan.add(str(n_column), seekers.SC(column, k * 10))
 
-        plan.add("union", combiners.Counter(k=k), inputs=df.columns)
+        plan.add(
+            "union", combiners.Counter(k=k), inputs=list(map(str, range(len(table))))
+        )
 
         return plan.run()
