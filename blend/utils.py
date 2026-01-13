@@ -203,7 +203,7 @@ def parse_table(
             )
         else:
             result_df = result_df.with_columns(
-                pl.lit(None).cast(pl.Boolean).alias("quadrant")
+                pl.lit(None, pl.Boolean).alias("quadrant")
             )
 
         columns_df.append(result_df.drop("blend_row_index", col_name))

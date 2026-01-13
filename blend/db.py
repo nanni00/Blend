@@ -63,7 +63,7 @@ class DBHandler(object):
                 row_id               UINTEGER,
                 quadrant             BOOLEAN,
                 super_key            BYTEA,
-                PRIMARY KEY (table_id, column_id, row_id)
+                -- PRIMARY KEY (table_id, column_id, row_id)
             );""")
 
     def create_column_indexes(self):
