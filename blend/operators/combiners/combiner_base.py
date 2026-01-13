@@ -1,7 +1,7 @@
 from abc import ABC
 from typing import Optional
 
-from ..OperatorBase import Operator
+from ..operator_base import Operator
 
 
 class Combiner(Operator, ABC):

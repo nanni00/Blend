@@ -11,9 +11,8 @@ from typing import Callable, Optional
 import polars as pl
 from tqdm import tqdm
 
-from blend import BLEND
-
-from .DBHandler import DBHandler
+from .blend import BLEND
+from .db import DBHandler
 from .utils import init_logger, parse_table
 
 

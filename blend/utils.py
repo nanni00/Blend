@@ -1,11 +1,7 @@
-import sys
 import logging
-import os
-import queue
-import shutil
+import sys
 from collections import Counter
 from functools import lru_cache
-from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 from string import ascii_lowercase
 from typing import Any, Callable, Optional, Set

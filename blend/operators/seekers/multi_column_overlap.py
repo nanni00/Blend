@@ -10,9 +10,9 @@ from tqdm import tqdm
 # FIX: include polars
 import pandas as pd
 
-from ...DBHandler import DBHandler
+from ...db import DBHandler
 from ...utils import calculate_xash
-from .SeekerBase import Seeker
+from .seeker_base import Seeker
 
 
 class MultiColumnOverlap(Seeker):

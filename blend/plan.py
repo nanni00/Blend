@@ -1,8 +1,7 @@
-# Typing imports
 from typing import Iterable, Optional
 
-from .DBHandler import DBHandler
-from .Operators import Combiner, Operator, Seeker
+from .db import DBHandler
+from .operators import Combiner, Operator, Seeker
 
 
 class Plan(object):

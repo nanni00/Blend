@@ -1,11 +1,12 @@
 from numbers import Number
+
 import numpy as np
 
 # FIX: move to pure polars syntax
 import pandas as pd
 
-from ...DBHandler import DBHandler
-from .SeekerBase import Seeker
+from ...db import DBHandler
+from .seeker_base import Seeker
 
 
 class Correlation(Seeker):

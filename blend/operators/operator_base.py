@@ -1,7 +1,7 @@
 from typing import Optional
 from abc import ABC, abstractmethod
 
-from ..DBHandler import DBHandler
+from ..db import DBHandler
 
 
 class Operator(ABC):

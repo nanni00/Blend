@@ -5,9 +5,9 @@ from typing import Callable, Optional
 import pandas as pd
 import polars as pl
 
-from .DBHandler import DBHandler
-from .Operators import Combiners, Seekers
-from .Plan import Plan
+from .db import DBHandler
+from .operators import combiners, seekers
+from .plan import Plan
 from .utils import clean
 
 __all__ = ["BLEND"]
@@ -22,6 +22,15 @@ class BLEND:
         xash_size: int = 128,
         disable_xash: bool = False,
     ) -> None:
+        """
+        Instantiate a BLEND indexer and retriever.
+
+        :param db_path: A Path object leading to a duckdb file position.
+        :param clean_function: The clean function for any cell value. It accepts any type and returns a string.
+        :param clean_function_args: The clean function arguments, passed to it with any call.
+        :param xash_size: The XASH size used for the super key.
+        :param disable_xash: If true, the super key is replaced with empty values.
+        """
         self._db_path = db_path
         self.db_handler: DBHandler = DBHandler(self._db_path)
 
@@ -51,7 +60,7 @@ class BLEND:
         :return: A list of tuples <table id, overlap size (distinct)>.
         """
         plan = Plan(self.db_handler)
-        plan.add("keyword", Seekers.K(values, k))
+        plan.add("keyword", seekers.K(values, k))
 
         return plan.run()
 
@@ -67,7 +76,7 @@ class BLEND:
         :return: A list of tuples <table id, column number, overlap size (distinct)>.
         """
         plan = Plan(self.db_handler)
-        plan.add("single_column_join", Seekers.SC(column, k))
+        plan.add("single_column_join", seekers.SC(column, k))
 
         return plan.run()
 
@@ -86,7 +95,7 @@ class BLEND:
         df = pd.DataFrame(table)
 
         plan = Plan(self.db_handler)
-        plan.add("multi_column_join", Seekers.MC(df, k, self.xash_size, verbose))
+        plan.add("multi_column_join", seekers.MC(df, k, self.xash_size, verbose))
         return plan.run()
 
     def correlation_search(
@@ -108,7 +117,7 @@ class BLEND:
         :param verbose:
         """
         plan = Plan(self.db_handler)
-        plan.add("correlation", Seekers.C(keys, targets, k, hash_size))
+        plan.add("correlation", seekers.C(keys, targets, k, hash_size))
 
         return plan.run()
 
@@ -126,8 +135,8 @@ class BLEND:
 
         plan = Plan(self.db_handler)
         for clm_name in df.columns:
-            plan.add(clm_name, Seekers.SC(df[clm_name], k * 10))
+            plan.add(clm_name, seekers.SC(df[clm_name], k * 10))
 
-        plan.add("union", Combiners.Counter(k=k), inputs=df.columns)
+        plan.add("union", combiners.Counter(k=k), inputs=df.columns)
 
         return plan.run()

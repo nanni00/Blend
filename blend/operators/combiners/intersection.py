@@ -1,7 +1,7 @@
 from functools import cmp_to_key
 
-from ...DBHandler import DBHandler
-from .CombinerBase import Combiner
+from ...db import DBHandler
+from .combiner_base import Combiner
 
 
 class Intersection(Combiner):

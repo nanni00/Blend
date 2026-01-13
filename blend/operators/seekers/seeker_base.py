@@ -1,8 +1,8 @@
 from abc import ABC
 from pathlib import Path
 
-from ...DBHandler import DBHandler
-from ..OperatorBase import Operator
+from ...db import DBHandler
+from ..operator_base import Operator
 
 
 class Seeker(Operator, ABC):

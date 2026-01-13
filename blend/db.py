@@ -1,7 +1,7 @@
 import random
 from numbers import Number
 from pathlib import Path
-from typing import Iterable, Optional, Union, Any
+from typing import Any, Iterable, Optional, Union
 
 import duckdb
 import pandas as pd

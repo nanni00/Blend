@@ -1,6 +1,6 @@
-from ...DBHandler import DBHandler
-from ..OperatorBase import Operator
-from .CombinerBase import Combiner
+from ...db import DBHandler
+from ..operator_base import Operator
+from .combiner_base import Combiner
 
 
 class Difference(Combiner):
