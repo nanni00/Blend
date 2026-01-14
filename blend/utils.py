@@ -11,29 +11,10 @@ import polars.selectors as cs
 
 whitespace_translator = str.maketrans(string.whitespace, " " * len(string.whitespace))
 
-
-@lru_cache(maxsize=1_000)
-def clean(
-    s: Any,
-    lowercase: bool = False,
-    replace_whitespaces: bool = False,
-    replace_custom: Optional[dict] = None,
-    filter_bad_tokens: bool = False,
-    bad_tokens: Optional[set] = {"nan", "null", "none"},
-):
-    s = str(s)
-    if lowercase:
-        s = s.lower()
-    if replace_whitespaces:
-        s = s.translate(whitespace_translator)
-    if replace_custom:
-        s = s.translate(replace_custom)
-    if bad_tokens and s in bad_tokens:
-        return ""
-    return s.strip()
+LRU_CACHE_SIZE = 1024
 
 
-@lru_cache(maxsize=1_000)
+@lru_cache(maxsize=LRU_CACHE_SIZE)
 def calculate_xash(token: str, hash_size: int = 128) -> int:
     """
     Calculates the XASH hash of a token.
@@ -89,7 +70,7 @@ def calculate_xash(token: str, hash_size: int = 128) -> int:
 
 
 def init_logger(logfile: Optional[Path] = None, stdout: bool = False):
-    logger = logging.getLogger("JOSIE")
+    logger = logging.getLogger("BLEND")
     logger.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter(
@@ -116,6 +97,61 @@ def init_logger(logfile: Optional[Path] = None, stdout: bool = False):
     return logger
 
 
+@lru_cache(maxsize=LRU_CACHE_SIZE)
+def clean(
+    s: Any,
+    lowercase: bool = False,
+    replace_whitespaces: bool = False,
+    replace_custom: Optional[dict] = None,
+    filter_bad_tokens: bool = False,
+    bad_tokens: Optional[list[str]] = None,
+):
+    if not bad_tokens:
+        bad_tokens = ["nan", "null", "none"]
+
+    s = str(s)
+    if lowercase:
+        s = s.lower()
+    if replace_whitespaces:
+        s = s.translate(whitespace_translator)
+    if replace_custom:
+        s = s.translate(replace_custom)
+    if filter_bad_tokens and s in bad_tokens:
+        return ""
+    return s.strip()
+
+
+def _clean(
+    column_name: str,
+    lowercase: bool = True,
+    replace_whitespaces: bool = True,
+    filter_bad_tokens: bool = True,
+    bad_tokens: Optional[list[str]] = None,
+) -> pl.Expr:
+    if not bad_tokens:
+        bad_tokens = ["nan", "null", "none"]
+
+    e = pl.col(column_name).cast(pl.String)
+
+    if lowercase:
+        e = e.str.to_lowercase()
+    if replace_whitespaces:
+        e = e.str.replace_all(r"[\t\n\r]", " ")
+        e = e.str.strip_chars()
+    if filter_bad_tokens:
+        e = pl.when(e.is_in(set(bad_tokens))).then(pl.lit("")).otherwise(e)
+
+    return e
+
+
+def remove_null_rows(lf: pl.LazyFrame, *exclude_columns) -> pl.LazyFrame:
+    return lf.filter(~pl.all_horizontal(pl.all().exclude(*exclude_columns).is_null()))
+
+
+def remove_null_columns(df: pl.DataFrame) -> pl.DataFrame:
+    return df[[s.name for s in df if not (s.null_count() == df.height)]]
+
+
 def parse_table(
     table_path: Path,
     scan_table_opts: dict,
@@ -138,13 +174,12 @@ def parse_table(
 
         # we need to keep track of the real row index of each record
         # even after dropping nulls, thus we create a new column to this aim
-        table_df = table_df.with_row_index(name="blend_row_index")
-
-        # in this way we drop only those rows that have all values nulls,
-        # except for the configured row index
-        table_df = table_df.filter(
-            ~pl.all_horizontal(pl.all().exclude("blend_row_index").is_null())
-        ).collect()
+        table_df = (
+            table_df.with_row_index(name="blend_row_index")
+            .pipe(remove_null_rows, "blend_row_index")
+            .collect()
+            .pipe(remove_null_columns)
+        )
 
         if table_df.shape[0] * table_df.shape[1] == 0:
             raise pl.exceptions.NoDataError("Empty table.")
@@ -159,56 +194,54 @@ def parse_table(
 
     # identify the numeric columns for the correlation part
     numeric_cols = set(table_df.select(cs.numeric()).columns)
-    columns_df = []
 
-    for col_counter, col_name in enumerate(table_df.columns[1:]):
-        # to insert this column values, select also the row index
-        column = table_df.select("blend_row_index", col_name)
-
-        if hasattr(clean_function, "__vectorized__"):
-            cleaned = column.select(
-                pl.col(col_name)
-                .map_elements(
-                    lambda x: clean_function(x, **clean_function_args),
-                    return_dtype=pl.String,
-                )
-                .alias("cell_value")
-            )
-        else:
-            cleaned = pl.Series(
-                "cell_value",
-                [
-                    clean_function(item, **clean_function_args)
-                    for row_counter, item in column.rows()
-                ],
-            )
-
-        result_df = column.with_columns(
-            [
-                cleaned,
-                pl.lit(table_id).alias("table_id"),
-                pl.lit(col_counter).alias("column_id"),
-                pl.col("blend_row_index").alias("row_id"),
-            ]
-        )
-
+    exprs = []
+    for col_counter, col_name in enumerate(
+        c for c in table_df.columns if c != "blend_row_index"
+    ):
         is_numeric = col_name in numeric_cols
         if is_numeric:
-            mean = column.select(col_name).to_series().mean()
-            result_df = result_df.with_columns(
+            quadrant_expr = (
                 pl.when(pl.col(col_name).is_not_null())
-                .then(pl.col(col_name) >= mean)
+                .then(pl.col(col_name) >= pl.col(col_name).mean())
                 .otherwise(None)
-                .alias("quadrant")
             )
         else:
-            result_df = result_df.with_columns(
-                pl.lit(None, pl.Boolean).alias("quadrant")
-            )
+            quadrant_expr = pl.lit(None, pl.Boolean)
 
-        columns_df.append(result_df.drop("blend_row_index", col_name))
+        clean_expr = _clean(col_name, **clean_function_args)
 
-    all_data = pl.concat(columns_df)
+        exprs.append(
+            pl.struct(
+                [
+                    clean_expr.alias("cell_value"),
+                    quadrant_expr.alias("quadrant"),
+                    pl.lit(col_counter).alias("column_id"),
+                ]
+            ).alias(col_name)
+        )
+
+    all_data = (
+        table_df.lazy()
+        .select(
+            [
+                pl.lit(table_id).alias("table_id"),
+                pl.col("blend_row_index").alias("row_id"),
+                *exprs,
+            ]
+        )
+        # Unpivot the table to go from Wide to Long format
+        .unpivot(
+            index=["table_id", "row_id"],
+            variable_name="original_col_name",
+            value_name="packed_data",
+        )
+        # Expand the struct back into individual columns
+        .unnest("packed_data")
+        .filter(pl.col("cell_value") != "")
+        .select("table_id", "column_id", "row_id", "quadrant", "cell_value")
+        .collect()
+    )
 
     if disable_xash:
         final_data = all_data.with_columns(pl.lit(int(0).to_bytes(), pl.Binary))
@@ -224,7 +257,7 @@ def parse_table(
             ).alias("super_key")
         )
 
-        final_data = all_data.join(superkey_data, on="row_id")
+        final_data = all_data.join(superkey_data, on="row_id", coalesce=True)
 
     return table_id, final_data
 
@@ -232,5 +265,8 @@ def parse_table(
 def calculate_superkey_for_row(cell_values: list, xash_size: int) -> bytes:
     superkey = 0
     for value in cell_values:
+        if value is None:
+            print(cell_values)
         superkey |= calculate_xash(value, xash_size)
-    return bytes(f"{superkey:0128b}".encode())
+    return superkey.to_bytes(16, byteorder="big")
+    # return bytes(f"{superkey:0128b}".encode())

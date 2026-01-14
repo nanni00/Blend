@@ -57,11 +57,11 @@ class DBHandler(object):
         with duckdb.connect(self.db_path) as con:
             con.sql(f"""
                 CREATE TABLE {self.index_table} (
-                cell_value           VARCHAR,
                 table_id             VARCHAR,
                 column_id            UINTEGER,
                 row_id               UINTEGER,
                 quadrant             BOOLEAN,
+                cell_value           VARCHAR,
                 super_key            BYTEA,
                 -- PRIMARY KEY (table_id, column_id, row_id)
             );""")
@@ -71,9 +71,13 @@ class DBHandler(object):
             con.sql(f"CREATE INDEX table_id_idx ON {self.index_table} (table_id);")
             con.sql(f"CREATE INDEX cell_value_idx ON {self.index_table} (cell_value);")
 
-    def save_data_to_duckdb(self, data: dict | pl.DataFrame):
+    def save_data_to_duckdb(self, data: pl.DataFrame | list[pl.DataFrame]):
+        if isinstance(data, pl.DataFrame):
+            data = [data]
+
         with duckdb.connect(self.db_path) as con:
-            con.sql(f"INSERT INTO {self.index_table} SELECT * FROM data;")
+            for df in data:
+                con.sql(f"INSERT INTO {self.index_table} SELECT * FROM df;")
 
     def close(self) -> None:
         pass
