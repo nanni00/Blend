@@ -226,7 +226,7 @@ class MultiColumnOverlap(Seeker):
                     break
 
                 rowid = hit[0]
-                superkey = int(hit[1], 2)
+                superkey = int.from_bytes(hit[1])
                 token = hit[2]
                 colid = hit[3]
                 relevant_input_rows = gd[token]

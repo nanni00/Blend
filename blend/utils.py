@@ -308,5 +308,5 @@ def calculate_superkey_for_row(cell_values: list, xash_size: int) -> bytes:
         if value is None:
             print(cell_values)
         superkey |= calculate_xash(value, xash_size)
-    # return superkey.to_bytes(16, byteorder="big")
-    return bytes(f"{superkey:0128b}".encode())
+    return superkey.to_bytes(16, byteorder="big")
+    # return bytes(f"{superkey:0128b}".encode())
