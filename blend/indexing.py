@@ -26,7 +26,7 @@ def _process_task(
     db_handler: DBHandler,
     lock: LockType,
 ):
-    table_id, df_or_error = parse_table(
+    table_id, df = parse_table(
         table_path,
         scan_table_opts,
         clean_function,
@@ -35,21 +35,21 @@ def _process_task(
         disable_xash,
     )
 
-    if isinstance(df_or_error, pl.DataFrame):
+    if isinstance(df, pl.DataFrame):
         # FIX: this sequentialization can be improved
         with lock:
-            db_handler.save_data_to_duckdb(df_or_error)
+            db_handler.save_data_to_duckdb([df])
         return table_id, True
     return table_id, False
 
 
-def index_tables_old(
+def index_tables(
     indexer: BLEND,
     tables_path: Path,
     log_stdout: bool = False,
     logfile_path: Optional[Path] = None,
     max_workers: Optional[int] = None,
-    scan_table_opts: dict = {},
+    scan_table_opts: Optional[dict] = None,
 ) -> tuple:
     """
     Index all the tables stored under the given tables path, considering
@@ -64,6 +64,9 @@ def index_tables_old(
     """
     if not tables_path.exists():
         raise FileNotFoundError(f"tables path doesn't exist: {tables_path}")
+
+    if not scan_table_opts:
+        scan_table_opts = {}
 
     init_logger(logfile_path, log_stdout)
 
@@ -81,8 +84,8 @@ def index_tables_old(
     start_t = time()
 
     # FIX: sometimes this doesn't work at all
-    # (check on polars with multiproc setting),
     # even by changhing with different mp_context
+    # (check on polars with multiproc setting),
     with ProcessPoolExecutor(max_workers) as executor:
         manager = multiprocessing.Manager()
         lock = manager.Lock()
@@ -135,7 +138,7 @@ def index_tables_old(
     return (end_ins_t - start_t, end_idx_t - end_ins_t, end_idx_t - start_t)
 
 
-def index_tables(
+def _index_tables_seq(
     indexer: BLEND,
     tables_path: Path,
     log_stdout: bool = False,

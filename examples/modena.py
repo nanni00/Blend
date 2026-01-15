@@ -23,4 +23,4 @@ indexer = BLEND(
 )
 
 scan_table_opts = {"ignore_errors": True}
-index_tables(indexer, data_lake_path, True, None, 4, scan_table_opts)
+index_tables(indexer, data_lake_path, True, None, 8, scan_table_opts)

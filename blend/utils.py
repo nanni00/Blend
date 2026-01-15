@@ -144,8 +144,8 @@ def _clean(
     return e
 
 
-def remove_null_rows(lf: pl.LazyFrame, *exclude_columns) -> pl.LazyFrame:
-    return lf.filter(~pl.all_horizontal(pl.all().exclude(*exclude_columns).is_null()))
+def remove_null_rows(df: pl.DataFrame, *exclude_columns) -> pl.DataFrame:
+    return df.filter(~pl.all_horizontal(pl.all().exclude(*exclude_columns).is_null()))
 
 
 def remove_null_columns(df: pl.DataFrame) -> pl.DataFrame:
@@ -161,23 +161,27 @@ def parse_table(
     disable_xash: bool,
 ) -> tuple[str, pl.DataFrame | str]:
     table_id = table_path.stem
-    format = table_path.suffix.replace(".", "")
+    format_ = table_path.suffix.replace(".", "")
 
     try:
-        match format:
+        match format_:
             case "csv":
                 table_df = pl.scan_csv(table_path, **scan_table_opts)
             case "parquet":
                 table_df = pl.scan_parquet(table_path, **scan_table_opts)
             case _:
-                raise ValueError(f"Unknown table format in {table_path}: {format}")
+                raise ValueError(f"Unknown table format in {table_path}: {format_}")
 
+        # BUG: here lazy-mode seems to be the worst choice:
+        # filtering the all-nulls rows on the already collected
+        # dataframe is much faster than doing this on a LazyFrame
+        #
         # we need to keep track of the real row index of each record
         # even after dropping nulls, thus we create a new column to this aim
         table_df = (
-            table_df.with_row_index(name="blend_row_index")
+            table_df.collect()
+            .with_row_index(name="blend_row_index")
             .pipe(remove_null_rows, "blend_row_index")
-            .collect()
             .pipe(remove_null_columns)
         )
 
