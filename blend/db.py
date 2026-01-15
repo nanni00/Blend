@@ -79,9 +79,10 @@ class DBHandler(object):
             if isinstance(data, list):
                 for df in data:
                     con.sql(f"INSERT INTO {self.index_table} SELECT * FROM df;")
-            else:
+            elif isinstance(data, Path):
+                filename = data.absolute().as_posix()
                 con.sql(
-                    f"INSERT INTO {self.index_table} SELECT * FROM {str(data.absolute())}"
+                    f"INSERT INTO {self.index_table} SELECT * FROM read_parquet('{filename}');"
                 )
 
     def close(self) -> None:
