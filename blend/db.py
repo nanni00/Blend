@@ -63,12 +63,12 @@ class DBHandler(object):
                 quadrant             BOOLEAN,
                 cell_value           VARCHAR,
                 super_key            BYTEA,
-                -- PRIMARY KEY (table_id, column_id, row_id)
+                PRIMARY KEY (table_id, column_id, row_id)
             );""")
 
     def create_column_indexes(self):
         with duckdb.connect(self.db_path) as con:
-            con.sql(f"CREATE INDEX table_id_idx ON {self.index_table} (table_id);")
+            # con.sql(f"CREATE INDEX table_id_idx ON {self.index_table} (table_id);")
             con.sql(f"CREATE INDEX cell_value_idx ON {self.index_table} (cell_value);")
 
     def save_data_to_duckdb(self, data: pl.DataFrame | list[pl.DataFrame]):

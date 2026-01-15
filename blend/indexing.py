@@ -1,12 +1,11 @@
 import logging
-import multiprocessing
 import os
-from _thread import LockType
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from inspect import cleandoc
+from multiprocessing import Manager, Process, Queue
 from pathlib import Path
 from time import time
-from typing import Callable, Optional
+from typing import Optional
 
 import polars as pl
 from tqdm import tqdm
@@ -16,29 +15,39 @@ from .db import DBHandler
 from .utils import init_logger, parse_table
 
 
+def _db_worker(queue: Queue, db_handler: DBHandler):
+    """Dedicated consumer process that handles all DB writes."""
+    while True:
+        data = queue.get()
+        if data is None:  # Poison pill to stop the process
+            break
+
+        if not isinstance(data, pl.DataFrame):
+            raise TypeError(f"Expected polars.DataFrame, found: {type(data)}")
+
+        try:
+            db_handler.save_data_to_duckdb([data])
+        except Exception as e:
+            print(f"DB Write Error: {e}")
+
+
 def _process_task(
     table_path: Path,
-    scan_table_opts: dict,
-    clean_function: Callable,
-    clean_function_args: dict,
+    load_opts: Optional[dict],
+    clean_args: Optional[dict],
     xash_size: int,
-    disable_xash: bool,
     db_handler: DBHandler,
-    lock: LockType,
+    queue: Queue,
 ):
     table_id, df = parse_table(
         table_path,
-        scan_table_opts,
-        clean_function,
-        clean_function_args,
+        load_opts,
+        clean_args,
         xash_size,
-        disable_xash,
     )
 
     if isinstance(df, pl.DataFrame):
-        # FIX: this sequentialization can be improved
-        with lock:
-            db_handler.save_data_to_duckdb([df])
+        queue.put(df)
         return table_id, True
     return table_id, False
 
@@ -49,7 +58,7 @@ def index_tables(
     log_stdout: bool = False,
     logfile_path: Optional[Path] = None,
     max_workers: Optional[int] = None,
-    scan_table_opts: Optional[dict] = None,
+    load_opts: Optional[dict] = None,
 ) -> tuple:
     """
     Index all the tables stored under the given tables path, considering
@@ -59,14 +68,11 @@ def index_tables(
     :param tables_path: The path to the folder containing the tables to index.
     :param logfile_path: The path to a logfile.
     :param max_workers: Maximum number of processes to instantiate.
-    :param scan_table_opts: A dictionary with Polars scan csv/parquet/... configuration options.
+    :param load_opts: A dictionary with Polars scan csv/parquet/... configuration options. See blend.utils.load_table.
     :return: A tuple with timing for the tables parse and insertion time, support indexes creation time and total time.
     """
     if not tables_path.exists():
         raise FileNotFoundError(f"tables path doesn't exist: {tables_path}")
-
-    if not scan_table_opts:
-        scan_table_opts = {}
 
     init_logger(logfile_path, log_stdout)
 
@@ -81,26 +87,29 @@ def index_tables(
     # create the main index
     indexer.db_handler.create_index_table()
 
+    # Create the Manager and Queue
+    manager = Manager()
+    queue = manager.Queue(maxsize=100)  # Optional: limit size to prevent RAM overflow
+
+    # Start the DB Worker Process
+    db_writer = Process(target=_db_worker, args=(queue, indexer.db_handler))
+    db_writer.start()
+
     start_t = time()
 
     # FIX: sometimes this doesn't work at all
     # even by changhing with different mp_context
     # (check on polars with multiproc setting),
     with ProcessPoolExecutor(max_workers) as executor:
-        manager = multiprocessing.Manager()
-        lock = manager.Lock()
-
         futures = {
             executor.submit(
                 _process_task,
                 tables_path.joinpath(table_id),
-                scan_table_opts,
-                indexer._clean_function,
-                indexer._clean_function_args,
+                load_opts,
+                indexer._clean_args,
                 indexer.xash_size,
-                indexer.disable_xash,
                 indexer.db_handler,
-                lock,
+                queue,
             )
             for table_id in list(table_ids)
         }
@@ -120,6 +129,10 @@ def index_tables(
                 logger.error(f"[error:{type(e)}][msg:{e}]")
 
     end_ins_t = time()
+
+    # Stop the DB worker
+    queue.put(None)
+    db_writer.join()
 
     # create indexes
     s = f"""
@@ -144,7 +157,7 @@ def _index_tables_seq(
     log_stdout: bool = False,
     logfile_path: Optional[Path] = None,
     max_workers: Optional[int] = None,
-    scan_table_opts: dict = {},
+    load_opts: dict = {},
     batch_size: Optional[int] = None,
 ) -> tuple:
     """
@@ -155,7 +168,7 @@ def _index_tables_seq(
     :param tables_path: The path to the folder containing the tables to index.
     :param logfile_path: The path to a logfile.
     :param max_workers: Maximum number of processes to instantiate. (not used - single process)
-    :param scan_table_opts: A dictionary with Polars scan csv/parquet/... configuration options.
+    :param load_opts: A dictionary with Polars scan csv/parquet/... configuration options.
     :param batch_size: Batch size as total number of rows inserted at a time into the underlying database (default, one table at a time).
     :return: A tuple with timing for the tables parse and insertion time, support indexes creation time and total time.
     """
@@ -190,11 +203,9 @@ def _index_tables_seq(
         table_path = tables_path.joinpath(table_id)
         table_id, df = parse_table(
             table_path,
-            scan_table_opts,
-            indexer._clean_function,
+            load_opts,
             indexer._clean_function_args,
             indexer.xash_size,
-            indexer.disable_xash,
         )
 
         if not isinstance(df, pl.DataFrame):

@@ -18,7 +18,7 @@ class BLEND:
         self,
         db_path: Path,
         clean_function: Optional[Callable] = None,
-        clean_function_args: Optional[dict] = None,
+        clean_args: Optional[dict] = None,
         xash_size: int = 128,
         disable_xash: bool = False,
     ) -> None:
@@ -36,7 +36,7 @@ class BLEND:
 
         # Clean function and relative parameters
         self._clean_function = clean_function if clean_function else clean
-        self._clean_function_args = clean_function_args if clean_function_args else {}
+        self._clean_args = clean_args if clean_args else {}
 
         self.xash_size = xash_size
         self.disable_xash = disable_xash
@@ -60,9 +60,7 @@ class BLEND:
         :return: A list of tuples <table id, overlap size (distinct)>.
         """
         if clean:
-            values = [
-                self._clean_function(v, **self._clean_function_args) for v in values
-            ]
+            values = [self._clean_function(v, **self._clean_args) for v in values]
         plan = Plan(self.db_handler)
         plan.add("keyword", seekers.K(values, k))
 
@@ -80,10 +78,7 @@ class BLEND:
         :return: A list of tuples <table id, column number, overlap size (distinct)>.
         """
         if clean:
-            column = [
-                self._clean_function(cell, **self._clean_function_args)
-                for cell in column
-            ]
+            column = [self._clean_function(cell, **self._clean_args) for cell in column]
         plan = Plan(self.db_handler)
         plan.add("single_column_join", seekers.SC(column, k))
 
@@ -104,10 +99,7 @@ class BLEND:
         """
         if clean:
             table = [
-                [
-                    self._clean_function(cell, **self._clean_function_args)
-                    for cell in row
-                ]
+                [self._clean_function(cell, **self._clean_args) for cell in row]
                 for row in table
             ]
         df = pd.DataFrame(table)
@@ -137,7 +129,7 @@ class BLEND:
         :param verbose:
         """
         if clean:
-            keys = [self._clean_function(k, **self._clean_function_args) for k in keys]
+            keys = [self._clean_function(k, **self._clean_args) for k in keys]
 
         plan = Plan(self.db_handler)
         plan.add("correlation", seekers.C(keys, targets, k, hash_size))
@@ -156,10 +148,7 @@ class BLEND:
         """
         if clean:
             table = [
-                [
-                    self._clean_function(cell, **self._clean_function_args)
-                    for cell in row
-                ]
+                [self._clean_function(cell, **self._clean_args) for cell in row]
                 for row in table
             ]
 

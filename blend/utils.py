@@ -152,25 +152,66 @@ def remove_null_columns(df: pl.DataFrame) -> pl.DataFrame:
     return df[[s.name for s in df if not (s.null_count() == df.height)]]
 
 
+def load_table(
+    path: Path, opts: Optional[dict] = None, lazy: bool = False
+) -> pl.DataFrame | pl.LazyFrame:
+    if opts is None:
+        opts = {}
+    format_ = path.suffix.replace(".", "")
+
+    match format_:
+        case "csv":
+            return pl.scan_csv(path, **opts) if lazy else pl.read_csv(path, **opts)
+        case "parquet":
+            return (
+                pl.scan_parquet(path, **opts) if lazy else pl.read_parquet(path, **opts)
+            )
+        case _:
+            raise ValueError(f"Unknown table format in {path}: {format_}")
+
+
 def parse_table(
-    table_path: Path,
-    scan_table_opts: dict,
-    clean_function: Callable,
-    clean_function_args: dict,
-    xash_size: int,
-    disable_xash: bool,
+    path: Path,
+    load_opts: Optional[dict] = None,
+    clean_args: Optional[dict] = None,
+    xash_size: int = 128,
 ) -> tuple[str, pl.DataFrame | str]:
-    table_id = table_path.stem
-    format_ = table_path.suffix.replace(".", "")
+    """
+    Load and parse the table at the specified path.
+
+    The output table is in the DataXFormer format, plus the
+    columns introduced by the BLEND authors:
+
+    | TableId | ColumnId | RowId | CellValue | Quadrant | SuperKey |
+
+    That is, each cell is reported along with its column and row IDs,
+    its quadrant value and its SuperKey (the XASH value under OR with all
+    the other row XASHes)
+
+    Args:
+        table_path: A pathlib.Path object pointing to the tables position.
+        load_opts: A dictionary of options, passed to pl.scan_csv or pl.scan_parquet
+        clean_args: A dictionary of options for the cell cleaning function.
+            See blend.utils.clean.
+        xash_size: The size of the XASH value (allowed values are 64, 128, 256, 512)
+
+    Returns:
+        A tuple with the table ID (obtained from its path) and the parsed rows.
+
+    Raises:
+        ValueError: If the table is in an unknown format.
+        pl.exceptions.NoDataError: If the table is empty.
+    """
+    if load_opts is None:
+        load_opts = {}
+
+    if clean_args is None:
+        clean_args = {}
+
+    table_id = path.stem
 
     try:
-        match format_:
-            case "csv":
-                table_df = pl.scan_csv(table_path, **scan_table_opts)
-            case "parquet":
-                table_df = pl.scan_parquet(table_path, **scan_table_opts)
-            case _:
-                raise ValueError(f"Unknown table format in {table_path}: {format_}")
+        table_df = load_table(path, load_opts, lazy=False)
 
         # BUG: here lazy-mode seems to be the worst choice:
         # filtering the all-nulls rows on the already collected
@@ -179,8 +220,7 @@ def parse_table(
         # we need to keep track of the real row index of each record
         # even after dropping nulls, thus we create a new column to this aim
         table_df = (
-            table_df.collect()
-            .with_row_index(name="blend_row_index")
+            table_df.with_row_index(name="blend_row_index")
             .pipe(remove_null_rows, "blend_row_index")
             .pipe(remove_null_columns)
         )
@@ -213,7 +253,7 @@ def parse_table(
         else:
             quadrant_expr = pl.lit(None, pl.Boolean)
 
-        clean_expr = _clean(col_name, **clean_function_args)
+        clean_expr = _clean(col_name, **clean_args)
 
         exprs.append(
             pl.struct(
@@ -247,7 +287,7 @@ def parse_table(
         .collect()
     )
 
-    if disable_xash:
+    if xash_size < 0:
         final_data = all_data.with_columns(pl.lit(int(0).to_bytes(), pl.Binary))
     else:
         superkey_data = all_data.group_by("row_id").agg(

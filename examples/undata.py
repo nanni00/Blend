@@ -6,10 +6,10 @@ sys.path.append(str(Path(__file__).parent.parent.absolute()))
 from blend import BLEND
 from blend.indexing import index_tables
 
-data_path = Path(__file__).parent.parent.joinpath("examples", "example-data", "modena")
+data_path = Path(__file__).parent.parent.joinpath("examples", "example-data", "undata")
 
 data_lake_path = data_path.joinpath("data-lake")
-index_db_path = data_path.joinpath("modena.db")
+index_db_path = data_path.joinpath("undata.db")
 logdir_path = data_path.joinpath("log")
 queries_path = data_path.joinpath("queries")
 
