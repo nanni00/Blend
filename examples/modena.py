@@ -1,3 +1,4 @@
+import shutil
 import sys
 from pathlib import Path
 
@@ -20,4 +21,7 @@ indexer = BLEND(
 )
 
 load_opts = {"ignore_errors": True}
-index_tables(indexer, data_lake_path, True, None, 8, load_opts)
+tmp_path = data_path.joinpath("tmp")
+tmp_path.mkdir(parents=True, exist_ok=True)
+index_tables(indexer, data_lake_path, True, None, 8, load_opts, tmp_path)
+shutil.rmtree(tmp_path)

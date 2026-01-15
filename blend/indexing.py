@@ -1,5 +1,6 @@
 import logging
 import os
+import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from inspect import cleandoc
 from multiprocessing import Manager, Process, Queue
@@ -15,20 +16,34 @@ from .db import DBHandler
 from .utils import init_logger, parse_table
 
 
-def _db_worker(queue: Queue, db_handler: DBHandler):
+def _db_worker(queue: Optional[Queue], tmp_path: Optional[Path], db_handler: DBHandler):
     """Dedicated consumer process that handles all DB writes."""
     while True:
-        data = queue.get()
-        if data is None:  # Poison pill to stop the process
-            break
+        if queue:
+            data = queue.get()
+            if data is None:  # Poison pill to stop the process
+                break
 
-        if not isinstance(data, pl.DataFrame):
-            raise TypeError(f"Expected polars.DataFrame, found: {type(data)}")
+            if not isinstance(data, pl.DataFrame):
+                raise TypeError(f"Expected polars.DataFrame, found: {type(data)}")
 
-        try:
-            db_handler.save_data_to_duckdb([data])
-        except Exception as e:
-            print(f"DB Write Error: {e}")
+            try:
+                db_handler.save_data_to_duckdb([data])
+            except Exception as e:
+                print(f"DB Write Error: {e}")
+        elif tmp_path:
+            files = os.listdir(tmp_path)
+            stop = False
+            for filename in files:
+                if filename == "STOP":
+                    stop = True
+                    break
+                else:
+                    file = tmp_path.joinpath(filename)
+                    db_handler.save_data_to_duckdb(file.absolute())
+
+            if stop:
+                break
 
 
 def _process_task(
@@ -37,7 +52,8 @@ def _process_task(
     clean_args: Optional[dict],
     xash_size: int,
     db_handler: DBHandler,
-    queue: Queue,
+    queue: Optional[Queue],
+    tmp_path: Optional[Path],
 ):
     table_id, df = parse_table(
         table_path,
@@ -47,7 +63,13 @@ def _process_task(
     )
 
     if isinstance(df, pl.DataFrame):
-        queue.put(df)
+        if queue:
+            queue.put(df)
+        elif tmp_path:
+            file = tmp_path.joinpath(f"{uuid.uuid4()}.parquet")
+            df.write_parquet(file, compression_level=22)
+            os.remove(file)
+
         return table_id, True
     return table_id, False
 
@@ -59,6 +81,7 @@ def index_tables(
     logfile_path: Optional[Path] = None,
     max_workers: Optional[int] = None,
     load_opts: Optional[dict] = None,
+    tmp_path: Optional[Path] = None,
 ) -> tuple:
     """
     Index all the tables stored under the given tables path, considering
@@ -89,10 +112,16 @@ def index_tables(
 
     # Create the Manager and Queue
     manager = Manager()
-    queue = manager.Queue(maxsize=100)  # Optional: limit size to prevent RAM overflow
+
+    if not tmp_path:
+        queue = manager.Queue(
+            maxsize=100
+        )  # Optional: limit size to prevent RAM overflow
+    else:
+        queue = None
 
     # Start the DB Worker Process
-    db_writer = Process(target=_db_worker, args=(queue, indexer.db_handler))
+    db_writer = Process(target=_db_worker, args=(queue, None, indexer.db_handler))
     db_writer.start()
 
     start_t = time()
@@ -108,8 +137,9 @@ def index_tables(
                 load_opts,
                 indexer._clean_args,
                 indexer.xash_size,
-                indexer.db_handler,
+                indexer.db_handler,  # ty: ignore
                 queue,
+                tmp_path,
             )
             for table_id in list(table_ids)
         }
@@ -131,7 +161,11 @@ def index_tables(
     end_ins_t = time()
 
     # Stop the DB worker
-    queue.put(None)
+    if queue:
+        queue.put(None)
+    elif tmp_path:
+        with open(tmp_path.joinpath("STOP"), "w") as file:
+            file.write("STOP")
     db_writer.join()
 
     # create indexes

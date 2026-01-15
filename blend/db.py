@@ -71,13 +71,18 @@ class DBHandler(object):
             # con.sql(f"CREATE INDEX table_id_idx ON {self.index_table} (table_id);")
             con.sql(f"CREATE INDEX cell_value_idx ON {self.index_table} (cell_value);")
 
-    def save_data_to_duckdb(self, data: pl.DataFrame | list[pl.DataFrame]):
+    def save_data_to_duckdb(self, data: pl.DataFrame | list[pl.DataFrame] | Path):
         if isinstance(data, pl.DataFrame):
             data = [data]
 
         with duckdb.connect(self.db_path) as con:
-            for df in data:
-                con.sql(f"INSERT INTO {self.index_table} SELECT * FROM df;")
+            if isinstance(data, list):
+                for df in data:
+                    con.sql(f"INSERT INTO {self.index_table} SELECT * FROM df;")
+            else:
+                con.sql(
+                    f"INSERT INTO {self.index_table} SELECT * FROM {str(data.absolute())}"
+                )
 
     def close(self) -> None:
         pass
