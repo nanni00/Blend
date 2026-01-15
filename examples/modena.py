@@ -21,7 +21,7 @@ indexer = BLEND(
 )
 
 load_opts = {"ignore_errors": True}
-tmp_path = data_path.joinpath("tmp")
-tmp_path.mkdir(parents=True, exist_ok=True)
-index_tables(indexer, data_lake_path, True, None, 8, load_opts, 100, tmp_path)
-shutil.rmtree(tmp_path)
+# tmp_path = data_path.joinpath("tmp")
+# tmp_path.mkdir(parents=True, exist_ok=True)
+index_tables(indexer, data_lake_path, True, None, 8, load_opts, 100)
+# shutil.rmtree(tmp_path)

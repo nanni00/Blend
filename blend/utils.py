@@ -4,7 +4,7 @@ import sys
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import polars as pl
 import polars.selectors as cs
@@ -102,21 +102,17 @@ def clean(
     s: Any,
     lowercase: bool = False,
     replace_whitespaces: bool = False,
-    replace_custom: Optional[dict] = None,
-    filter_bad_tokens: bool = False,
-    bad_tokens: Optional[list[str]] = None,
+    bad_tokens: Optional[tuple[str]] = None,
 ):
-    if not bad_tokens:
-        bad_tokens = ["nan", "null", "none"]
+    if bad_tokens is None:
+        bad_tokens = ("nan", "null", "none")
 
     s = str(s)
     if lowercase:
         s = s.lower()
     if replace_whitespaces:
         s = s.translate(whitespace_translator)
-    if replace_custom:
-        s = s.translate(replace_custom)
-    if filter_bad_tokens and s in bad_tokens:
+    if s in bad_tokens:
         return ""
     return s.strip()
 
@@ -312,5 +308,5 @@ def calculate_superkey_for_row(cell_values: list, xash_size: int) -> bytes:
         if value is None:
             print(cell_values)
         superkey |= calculate_xash(value, xash_size)
-    return superkey.to_bytes(16, byteorder="big")
-    # return bytes(f"{superkey:0128b}".encode())
+    # return superkey.to_bytes(16, byteorder="big")
+    return bytes(f"{superkey:0128b}".encode())

@@ -115,7 +115,6 @@ class BLEND:
         k: int = 10,
         hash_size: int = 256,
         clean: bool = True,
-        verbose: bool = False,
     ):
         """
         Execute a join-correlation search on the given key and target columns.

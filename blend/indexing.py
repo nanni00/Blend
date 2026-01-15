@@ -16,19 +16,29 @@ from .db import DBHandler
 from .utils import init_logger, parse_table
 
 
-def _db_worker(queue: Optional[Queue], tmp_path: Optional[Path], db_handler: DBHandler):
+def _db_worker(
+    queue: Optional[Queue],
+    tmp_path: Optional[Path],
+    batch_rows: int,
+    db_handler: DBHandler,
+):
     """Dedicated consumer process that handles all DB writes."""
+    dataframes = []
     while True:
         if queue:
-            data = queue.get()
-            if data is None:  # Poison pill to stop the process
+            df = queue.get()
+            if df is None:  # Poison pill to stop the process
                 break
 
-            if not isinstance(data, pl.DataFrame):
-                raise TypeError(f"Expected polars.DataFrame, found: {type(data)}")
+            if not isinstance(df, pl.DataFrame):
+                raise TypeError(f"Expected polars.DataFrame, found: {type(df)}")
+            dataframes.append(df)
+            if sum(_df.height for _df in dataframes) < batch_rows:
+                continue
 
             try:
-                db_handler.save_data_to_duckdb([data])
+                db_handler.save_data_to_duckdb(dataframes)
+                dataframes.clear()
             except Exception as e:
                 print(f"DB Write Error: {e}")
 
@@ -86,6 +96,7 @@ def index_tables(
     max_workers: Optional[int] = None,
     load_opts: Optional[dict] = None,
     max_queue_size: Optional[int] = None,
+    batch_rows: Optional[int] = None,
     tmp_path: Optional[Path] = None,
 ) -> tuple:
     """
@@ -97,6 +108,10 @@ def index_tables(
     :param logfile_path: The path to a logfile.
     :param max_workers: Maximum number of processes to instantiate.
     :param load_opts: A dictionary with Polars scan csv/parquet/... configuration options. See blend.utils.load_table.
+    :param max_queue_size: Size of the queue when the insertion is queue-based.
+    :param batch_rows: Size of batch insert when the insertion is queue-based.
+    :param tmp_path: Temporary folder where the temporary parquet files representing the parsed tables will be placed
+        when the insertion is file-based.
     :return: A tuple with timing for the tables parse and insertion time, support indexes creation time and total time.
     """
     if not tables_path.exists():
@@ -104,6 +119,8 @@ def index_tables(
 
     if max_queue_size is None:
         max_queue_size = 100
+    if batch_rows is None:
+        batch_rows = 1_000_000
 
     init_logger(logfile_path, log_stdout)
 
@@ -128,7 +145,9 @@ def index_tables(
         queue = manager.Queue(max_queue_size)
 
     # Start the DB Worker Process
-    db_writer = Process(target=_db_worker, args=(queue, tmp_path, indexer.db_handler))
+    db_writer = Process(
+        target=_db_worker, args=(queue, tmp_path, batch_rows, indexer.db_handler)
+    )
     db_writer.start()
 
     start_t = time.time()
