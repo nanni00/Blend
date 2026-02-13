@@ -9,6 +9,20 @@ import polars as pl
 
 
 class DBHandler(object):
+    """Handles interactions with the DuckDB database for the BLEND index.
+
+    Attributes:
+        connection: The DuckDB connection object.
+        cursor: The DuckDB cursor object.
+        dbms: The database management system being used (default: "duckdb").
+        use_pandas: Whether to return results as pandas DataFrames (default: True).
+        db_path: The path to the DuckDB database file.
+        index_table: The name of the table used for indexing.
+        db_name: The name of the database.
+        use_ml_optimizer: Whether to use the ML optimizer.
+        frequency_dict: A dictionary mapping tokens to their frequencies.
+    """
+
     def __init__(
         self,
         db_path: Path,
@@ -17,6 +31,19 @@ class DBHandler(object):
         freq_dict_path: str | None = None,
         use_pandas: bool = True,
     ) -> None:
+        """Initializes the DBHandler.
+
+        Args:
+            db_path: The path to the DuckDB database file.
+            index_table: The name of the table used for indexing. Defaults to "all_tables".
+            use_ml_optimizer: Whether to use the ML optimizer. Defaults to False.
+            freq_dict_path: Path to the frequency dictionary CSV file. Required if use_ml_optimizer is True.
+            use_pandas: Whether to return results as pandas DataFrames. Defaults to True.
+
+        Raises:
+            FileNotFoundError: If the parent directory of db_path does not exist.
+            AssertionError: If use_ml_optimizer is True but freq_dict_path is not provided.
+        """
         self.connection = None
         self.cursor = None
         self.dbms = "duckdb"  # we'll use only duckdb
@@ -47,6 +74,7 @@ class DBHandler(object):
             self.frequency_dict = {}
 
     def drop_index_table(self):
+        """Drops the index table if it exists."""
         with duckdb.connect(self.db_path) as con:
             con.sql(f"""
                 DROP TABLE IF EXISTS {self.index_table} CASCADE;
@@ -54,6 +82,7 @@ class DBHandler(object):
             """)
 
     def create_index_table(self):
+        """Creates the index table."""
         with duckdb.connect(self.db_path) as con:
             con.sql(f"""
                 CREATE TABLE {self.index_table} (
@@ -67,11 +96,17 @@ class DBHandler(object):
             );""")
 
     def create_column_indexes(self):
+        """Creates indexes on the cell_value column."""
         with duckdb.connect(self.db_path) as con:
             # con.sql(f"CREATE INDEX table_id_idx ON {self.index_table} (table_id);")
             con.sql(f"CREATE INDEX cell_value_idx ON {self.index_table} (cell_value);")
 
     def save_data_to_duckdb(self, data: pl.DataFrame | list[pl.DataFrame] | Path):
+        """Saves data to the DuckDB database.
+
+        Args:
+            data: A polars DataFrame, a list of polars DataFrames, or a Path to a parquet file.
+        """
         if isinstance(data, pl.DataFrame):
             data = [data]
 
@@ -86,14 +121,29 @@ class DBHandler(object):
                 )
 
     def close(self) -> None:
+        """Closes the database connection (placeholder)."""
         pass
 
     def clean_query(self, query: str) -> str:
-        """Replaces the 'all_tables' index name"""
+        """Replaces the 'all_tables' index name with the actual index table name.
+
+        Args:
+            query: The SQL query string.
+
+        Returns:
+            The modified query string.
+        """
         return query.replace("all_tables", f"{self.index_table}")
 
     def execute_and_fetchall(self, query: str) -> list[Union[tuple, list]]:
-        """Returns results"""
+        """Executes a query and returns all results.
+
+        Args:
+            query: The SQL query string.
+
+        Returns:
+            A list of tuples or lists containing the query results.
+        """
         query = self.clean_query(query)
         query = query.replace("TO_BITSTRING(super_key)", "super_key")
 
@@ -103,6 +153,15 @@ class DBHandler(object):
                 return cursor.fetchall()
 
     def execute_and_fetchyield(self, query: str, params: Optional[tuple] = None):
+        """Executes a query and yields results in batches.
+
+        Args:
+            query: The SQL query string.
+            params: Optional parameters for the query.
+
+        Yields:
+            Rows from the query result.
+        """
         query = self.clean_query(query)
         query = query.replace("TO_BITSTRING(super_key)", "super_key")
 
@@ -169,13 +228,12 @@ class DBHandler(object):
 
     @staticmethod
     def create_sql_list_str(values: Iterable[Any]) -> str:
-        values = [str(x).replace("'", "") for x in values]
-        return "'{}'".format("' , '".join(set(values)))
+        values = set(map(lambda x: str(x).replace("'", ""), values))
+        return "'{}'".format("' , '".join(values))
 
     @staticmethod
     def create_sql_list_numeric(values: Iterable[Number]) -> str:
-        values = [str(x) for x in values]
-        return "{}".format(" , ".join(values))
+        return "{}".format(" , ".join(map(str, values)))
 
     @staticmethod
     def random_subquery_name() -> str:

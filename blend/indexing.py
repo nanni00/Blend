@@ -22,7 +22,14 @@ def _db_worker(
     batch_rows: int,
     db_handler: DBHandler,
 ):
-    """Dedicated consumer process that handles all DB writes."""
+    """Dedicated consumer process that handles all DB writes.
+
+    Args:
+        queue: The queue containing dataframes to write.
+        tmp_path: The temporary path for file-based communication (alternative to queue).
+        batch_rows: The number of rows to accumulate before writing.
+        db_handler: The DBHandler instance.
+    """
     dataframes = []
     while True:
         if queue:
@@ -72,6 +79,18 @@ def _table_parsing_worker(
     queue: Optional[Queue],
     tmp_path: Optional[Path],
 ):
+    """Parses a table and sends the result to the DB worker.
+
+    Args:
+        table_path: Path to the table file.
+        load_opts: Options for loading the table.
+        clean_args: Options for cleaning the table.
+        xash_size: Size of the XASH hash.
+        max_cell_length: Maximum length of cell values.
+        db_handler: The DBHandler instance.
+        queue: Use this queue to send dataframes if provided.
+        tmp_path: Use this path to write parquet files if queue is not provided.
+    """
     table_id, df = parse_table(
         table_path,
         load_opts,
@@ -101,20 +120,24 @@ def index_tables(
     batch_rows: Optional[int] = None,
     tmp_path: Optional[Path] = None,
 ) -> tuple:
-    """
-    Index all the tables stored under the given tables path, considering
-    it as a flat folder with only tables.
+    """Index all the tables stored under the given tables path.
 
-    :param indexer: A BLEND indexer instance.
-    :param tables_path: The path to the folder containing the tables to index.
-    :param logfile_path: The path to a logfile.
-    :param max_workers: Maximum number of processes to instantiate.
-    :param load_opts: A dictionary with Polars scan csv/parquet/... configuration options. See blend.utils.load_table.
-    :param max_queue_size: Size of the queue when the insertion is queue-based.
-    :param batch_rows: Size of batch insert when the insertion is queue-based.
-    :param tmp_path: Temporary folder where the temporary parquet files representing the parsed tables will be placed
-        when the insertion is file-based.
-    :return: A tuple with timing for the tables parse and insertion time, support indexes creation time and total time.
+    It considers the path as a flat folder with only tables.
+
+    Args:
+        indexer: A BLEND indexer instance.
+        tables_path: The path to the folder containing the tables to index.
+        log_stdout: Whether to log to stdout.
+        logfile_path: The path to a logfile.
+        max_workers: Maximum number of processes to instantiate.
+        load_opts: A dictionary with Polars scan csv/parquet/... configuration options. See blend.utils.load_table.
+        max_queue_size: Size of the queue when the insertion is queue-based.
+        batch_rows: Size of batch insert when the insertion is queue-based.
+        tmp_path: Temporary folder where the temporary parquet files representing the parsed tables will be placed
+            when the insertion is file-based.
+
+    Returns:
+        A tuple with timing for the tables parse and insertion time, support indexes creation time and total time.
     """
     if not tables_path.exists():
         raise FileNotFoundError(f"tables path doesn't exist: {tables_path}")

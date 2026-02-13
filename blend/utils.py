@@ -16,9 +16,16 @@ LRU_CACHE_SIZE = 1024
 
 @lru_cache(maxsize=LRU_CACHE_SIZE)
 def calculate_xash(token: str, hash_size: int = 128) -> int:
-    """
-    Calculates the XASH hash of a token.
+    """Calculates the XASH hash of a token.
+
     Setting is the same as provided by XASH/MATE authors.
+
+    Args:
+        token: The input string token to hash.
+        hash_size: The size of the hash in bits (default: 128).
+
+    Returns:
+        The calculated XASH integer.
     """
 
     number_of_ones = 5
@@ -70,6 +77,15 @@ def calculate_xash(token: str, hash_size: int = 128) -> int:
 
 
 def init_logger(logfile: Optional[Path] = None, stdout: bool = False):
+    """Initializes the BLEND logger.
+
+    Args:
+        logfile: Optional path to a log file.
+        stdout: Whether to log to stdout (default: False).
+
+    Returns:
+        The configured logger object.
+    """
     logger = logging.getLogger("BLEND")
     logger.setLevel(logging.DEBUG)
 
@@ -104,6 +120,17 @@ def clean(
     replace_whitespaces: bool = False,
     bad_tokens: Optional[tuple[str]] = None,
 ):
+    """Cleans a string or other value.
+
+    Args:
+        s: The input value to clean.
+        lowercase: Whether to convert to lowercase (default: False).
+        replace_whitespaces: Whether to replace all whitespaces with spaces (default: False).
+        bad_tokens: A tuple of tokens to consider as empty/bad. Defaults to ("nan", "null", "none").
+
+    Returns:
+        The cleaned string, or an empty string if it's a bad token.
+    """
     if bad_tokens is None:
         bad_tokens = ("nan", "null", "none")
 
@@ -117,6 +144,27 @@ def clean(
     return s.strip()
 
 
+def _truncate(s: str, max_length: int | None = 128) -> str:
+    """Truncates a string to the specified length.
+
+    Args:
+        s: The string to truncate.
+        max_length: The maximum length. If positive, keep the first max_length characters.
+            If negative, keep the last max_length characters.
+            If None, keep the whole string.
+
+    Returns:
+        The truncated string.
+    """
+    if max_length is None:
+        return s
+
+    if max_length > 0:
+        return s[:max_length]
+
+    return s[max_length:]
+
+
 def _clean(
     column_name: str,
     lowercase: bool = True,
@@ -124,6 +172,18 @@ def _clean(
     filter_bad_tokens: bool = True,
     bad_tokens: Optional[list[str]] = None,
 ) -> pl.Expr:
+    """Creates a Polars expression to clean a column.
+
+    Args:
+        column_name: The name of the column to clean.
+        lowercase: Whether to convert to lowercase (default: True).
+        replace_whitespaces: Whether to replace newlines/tabs with spaces (default: True).
+        filter_bad_tokens: Whether to filter out bad tokens (default: True).
+        bad_tokens: List of tokens to filter out. Defaults to ["nan", "null", "none"].
+
+    Returns:
+        A Polars expression for cleaning the column.
+    """
     if not bad_tokens:
         bad_tokens = ["nan", "null", "none"]
 
@@ -173,8 +233,7 @@ def parse_table(
     xash_size: int = 128,
     max_cell_length: int = 128,
 ) -> tuple[str, pl.DataFrame | str]:
-    """
-    Load and parse the table at the specified path.
+    """Load and parse the table at the specified path.
 
     The output table is in the DataXFormer format, plus the
     columns introduced by the BLEND authors:
@@ -186,7 +245,7 @@ def parse_table(
     the other row XASHes)
 
     Args:
-        table_path: A pathlib.Path object pointing to the tables position.
+        path: A pathlib.Path object pointing to the tables position.
         load_opts: A dictionary of options, passed to pl.scan_csv or pl.scan_parquet
         clean_args: A dictionary of options for the cell cleaning function.
             See blend.utils.clean.
@@ -254,8 +313,10 @@ def parse_table(
             quadrant_expr = pl.lit(None, pl.Boolean)
 
         clean_expr = _clean(col_name, **clean_args)
-        if max_cell_length:
+        if isinstance(max_cell_length, int) and max_cell_length > 0:
             clean_expr = clean_expr.str.head(max_cell_length)
+        elif isinstance(max_cell_length, int) and max_cell_length < 0:
+            clean_expr = clean_expr.str.tail(max_cell_length)
 
         exprs.append(
             pl.struct(

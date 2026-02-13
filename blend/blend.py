@@ -9,7 +9,7 @@ import polars as pl
 from .db import DBHandler
 from .operators import combiners, seekers
 from .plan import Plan
-from .utils import clean
+from .utils import clean, _truncate
 
 __all__ = ["BLEND"]
 
@@ -21,16 +21,18 @@ class BLEND:
         clean_function: Optional[Callable] = None,
         clean_args: Optional[dict] = None,
         xash_size: int = 128,
-        max_cell_length: int = 128,
+        max_cell_length: Optional[int] = 128,
     ) -> None:
-        """
-        Instantiate a BLEND indexer and retriever.
+        """Instantiate a BLEND indexer and retriever.
 
-        :param db_path: A Path object leading to a duckdb file position.
-        :param clean_function: The clean function for any cell value. It accepts any type and returns a string.
-        :param clean_function_args: The clean function arguments, passed to it with any call.
-        :param xash_size: The XASH size used for the super key.
-        :param disable_xash: If true, the super key is replaced with empty values.
+        Args:
+            db_path: A Path object leading to a duckdb file position.
+            clean_function: The clean function for any cell value. It accepts any type and returns a string.
+            clean_args: The clean function arguments, passed to it with any call.
+            xash_size: The XASH size used for the super key.
+            max_cell_length: The size of the stored cell value as bytes (default 128).
+                Only the first max_cell_length of each string will be stored. If it is negative,
+                only the last max_cell_length will be stored.
         """
         self._db_path = db_path
         self.db_handler: DBHandler = DBHandler(self._db_path)
@@ -52,16 +54,19 @@ class BLEND:
         self.db_handler.close()
 
     def keyword_search(self, values: list[Any], k: int, clean: bool = True):
-        """
-        Execute a keyword search on the given query values.
+        """Execute a keyword search on the given query values.
 
-        :param values: A list of string keywords.
-        :param k: The number of results to return.
-        :param clean: If True, apply the default clean function on the input values.
-        :return: A list of tuples <table id, overlap size (distinct)>.
+        Args:
+            values: A list of string keywords.
+            k: The number of results to return.
+            clean: If True, apply the default clean function on the input values.
+
+        Returns:
+            A list of tuples <table id, overlap size (distinct)>.
         """
         if clean:
             values = [self._clean_function(v, **self._clean_args) for v in values]
+        values = [_truncate(v, self.max_cell_length) for v in values]
         plan = Plan(self.db_handler)
         plan.add("keyword", seekers.K(values, k))
 
@@ -70,16 +75,19 @@ class BLEND:
     def single_column_join_search(
         self, column: list[Any], k: int, clean: bool = True
     ) -> list[tuple[str, int, int]]:
-        """
-        Execute a single-column join search on the given column values.
+        """Execute a single-column join search on the given column values.
 
-        :param column: a list of strings representing the query column.
-        :param k: The number of results to return.
-        :param clean: If True, apply the default clean function on the input values.
-        :return: A list of tuples <table id, column number, overlap size (distinct)>.
+        Args:
+            column: A list of strings representing the query column.
+            k: The number of results to return.
+            clean: If True, apply the default clean function on the input values.
+
+        Returns:
+            A list of tuples <table id, column number, overlap size (distinct)>.
         """
         if clean:
             column = [self._clean_function(cell, **self._clean_args) for cell in column]
+        column = [_truncate(cell, self.max_cell_length) for cell in column]
         plan = Plan(self.db_handler)
         plan.add("single_column_join", seekers.SC(column, k))
 
@@ -88,21 +96,27 @@ class BLEND:
     def multi_column_join_search(
         self, table: list[list[Any]], k: int, clean: bool = True, verbose: bool = False
     ) -> list[tuple[str, list, float]]:
-        """
-        Execute a multi-column join search on the given table.
+        """Execute a multi-column join search on the given table.
+
         This method is built on top of the MATE discovery algorithm.
 
-        :param table: A list-of-rows representing a table.
-        :param k: The number of results to return.
-        :param clean: If True, apply the default clean function on the input values.
-        :param verbose:
-        :return: A list of tuples <table id, column numbers, joinability score>
+        Args:
+            table: A list-of-rows representing a table.
+            k: The number of results to return.
+            clean: If True, apply the default clean function on the input values.
+            verbose: If True, print verbose output.
+
+        Returns:
+            A list of tuples <table id, column numbers, joinability score>.
         """
         if clean:
             table = [
                 [self._clean_function(cell, **self._clean_args) for cell in row]
                 for row in table
             ]
+        table = [
+            [_truncate(cell, self.max_cell_length) for cell in row] for row in table
+        ]
         df = pd.DataFrame(table)
 
         plan = Plan(self.db_handler)
@@ -117,19 +131,20 @@ class BLEND:
         hash_size: int = 256,
         clean: bool = True,
     ):
-        """
-        Execute a join-correlation search on the given key and target columns.
+        """Execute a join-correlation search on the given key and target columns.
+
         This method is built on top of the QCR Join-Correlation search schema.
 
-        :param keys: A list of strings representing a key column.
-        :param targets: A list of numbers representing a target column.
-        :param k: The number of results to return.
-        :param hash_size: The dimension of the hash size used by the QCR approach.
-        :param clean: If True, apply the default clean function on the input values.
-        :param verbose:
+        Args:
+            keys: A list of strings representing a key column.
+            targets: A list of numbers representing a target column.
+            k: The number of results to return.
+            hash_size: The dimension of the hash size used by the QCR approach.
+            clean: If True, apply the default clean function on the input values.
         """
         if clean:
             keys = [self._clean_function(k, **self._clean_args) for k in keys]
+        keys = [_truncate(k, self.max_cell_length) for k in keys]
 
         plan = Plan(self.db_handler)
         plan.add("correlation", seekers.C(keys, targets, k, hash_size))
@@ -137,20 +152,24 @@ class BLEND:
         return plan.run()
 
     def union_search(self, table: list[list[Any]], k: int, clean: bool = True):
-        """
-        Execute a union search on the given table.
+        """Execute a union search on the given table.
+
         This method exeutes a union of the results given by a single-column search
         on all the table columns.
 
-        :param table: A list-of-rows representing a table.
-        :param k: The number of results to return.
-        :param clean: If True, apply the default clean function on the input values.
+        Args:
+            table: A list-of-rows representing a table.
+            k: The number of results to return.
+            clean: If True, apply the default clean function on the input values.
         """
         if clean:
             table = [
                 [self._clean_function(cell, **self._clean_args) for cell in row]
                 for row in table
             ]
+        table = [
+            [_truncate(cell, self.max_cell_length) for cell in row] for row in table
+        ]
 
         # switch to a list-of-columns view of the table
         table = list(zip(*table))

@@ -14,7 +14,18 @@ class Plan(object):
     def add(
         self, name: str, operator: Operator, inputs: Optional[Iterable[str]] = None
     ) -> None:
-        """Add an operator to the plan."""
+        """Add an operator to the plan.
+
+        Args:
+            name: The name of the operator.
+            operator: The operator instance to add.
+            inputs: A list of names of input operators for the current operator.
+
+        Raises:
+            ValueError: If the operator name already exists or if a Seeker has inputs.
+            TypeError: If the operator is not an instance of Operator.
+            KeyError: If an input operator is not found in the plan.
+        """
         if inputs is None:
             inputs = []
         inputs = list(inputs)
@@ -48,7 +59,14 @@ class Plan(object):
         self._terminal_candidates -= set(inputs)
 
     def run(self) -> list:
-        """Run the plan."""
+        """Run the plan.
+
+        Returns:
+            The results of the plan execution.
+
+        Raises:
+            ValueError: If no terminal candidates or multiple terminal candidates are found.
+        """
         if len(self._terminal_candidates) == 0:
             raise ValueError("No terminal candidates found.")
 
