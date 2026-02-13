@@ -251,8 +251,8 @@ def parse_table(
             See blend.utils.clean.
         xash_size: The size of the XASH value as bits (allowed values are 64, 128, 256, 512)
         max_cell_length: The size of the stored cell value as bytes (default 128).
-            Only the first max_cell_length of each string will be stored. If it is negative,
-            only the last max_cell_length will be stored.
+            Only the first max_cell_length of each string will be stored.
+            If it is negative, only the last max_cell_length will be stored.
 
     Returns:
         A tuple with the table ID (obtained from its path) and the parsed rows.
@@ -279,8 +279,8 @@ def parse_table(
         # we need to keep track of the real row index of each record
         # even after dropping nulls, thus we create a new column to this aim
         table_df = (
-            table_df.with_row_index(name="blend_row_index")
-            .pipe(remove_null_rows, "blend_row_index")
+            table_df.with_row_index(name="bl_row_index")
+            .pipe(remove_null_rows, "bl_row_index")
             .pipe(remove_null_columns)
         )
 
@@ -300,7 +300,7 @@ def parse_table(
 
     exprs = []
     for col_counter, col_name in enumerate(
-        c for c in table_df.columns if c != "blend_row_index"
+        c for c in table_df.columns if c != "bl_row_index"
     ):
         is_numeric = col_name in numeric_cols
         if is_numeric:
@@ -321,9 +321,9 @@ def parse_table(
         exprs.append(
             pl.struct(
                 [
-                    clean_expr.alias("cell_value"),
-                    quadrant_expr.alias("quadrant"),
-                    pl.lit(col_counter).alias("column_id"),
+                    clean_expr.alias("bl_cell_value"),
+                    quadrant_expr.alias("bl_quadrant"),
+                    pl.lit(col_counter).alias("bl_column_id"),
                 ]
             ).alias(col_name)
         )
@@ -332,39 +332,44 @@ def parse_table(
         table_df.lazy()
         .select(
             [
-                pl.lit(table_id).alias("table_id"),
-                pl.col("blend_row_index").alias("row_id"),
+                pl.lit(table_id).alias("bl_table_id"),
+                pl.col("bl_row_index").alias("bl_row_id"),
                 *exprs,
             ]
         )
         # Unpivot the table to go from Wide to Long format
         .unpivot(
-            index=["table_id", "row_id"],
+            index=["bl_table_id", "bl_row_id"],
             variable_name="original_col_name",
             value_name="packed_data",
         )
         # Expand the struct back into individual columns
         .unnest("packed_data")
-        .filter(pl.col("cell_value") != "")
-        .select("table_id", "column_id", "row_id", "quadrant", "cell_value")
+        .filter(pl.col("bl_cell_value") != "")
+        .select(
+            "bl_table_id", "bl_column_id", "bl_row_id", "bl_quadrant", "bl_cell_value"
+        )
         .collect()
     )
 
     if xash_size < 0:
         final_data = all_data.with_columns(pl.lit(int(0).to_bytes(), pl.Binary))
     else:
-        superkey_data = all_data.group_by("row_id").agg(
+        superkey_data = all_data.group_by("bl_row_id").agg(
             pl.map_groups(
-                ["cell_value"],
+                ["bl_cell_value"],
                 lambda values: calculate_superkey_for_row(
                     values[0].to_list(), xash_size
                 ),
                 return_dtype=pl.Binary,
                 returns_scalar=True,
-            ).alias("super_key")
+            ).alias("bl_super_key")
         )
 
-        final_data = all_data.join(superkey_data, on="row_id", coalesce=True)
+        final_data = all_data.join(superkey_data, on="bl_row_id", coalesce=True)
+
+    assert isinstance(final_data, pl.DataFrame)
+    final_data = final_data.rename(lambda c: c.removeprefix("bl_"))
 
     return table_id, final_data
 

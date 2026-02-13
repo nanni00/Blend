@@ -1,4 +1,4 @@
-# TODO: max_cell_length also when quering the index?
+# TODO: use_ml_optimizer and toker_freq_dict file parameter for main class
 from numbers import Number
 from pathlib import Path
 from typing import Any, Callable, Optional
