@@ -17,7 +17,9 @@ queries_path = data_path.joinpath("queries")
 data_path.exists()
 
 indexer = BLEND(
-    index_db_path, clean_args={"lowercase": True, "filter_bad_tokens": True}
+    index_db_path,
+    clean_args={"lowercase": True, "filter_bad_tokens": True},
+    max_cell_length=512,
 )
 
 load_opts = {"ignore_errors": True}

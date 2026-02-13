@@ -171,6 +171,7 @@ def parse_table(
     load_opts: Optional[dict] = None,
     clean_args: Optional[dict] = None,
     xash_size: int = 128,
+    max_cell_length: int = 128,
 ) -> tuple[str, pl.DataFrame | str]:
     """
     Load and parse the table at the specified path.
@@ -189,7 +190,10 @@ def parse_table(
         load_opts: A dictionary of options, passed to pl.scan_csv or pl.scan_parquet
         clean_args: A dictionary of options for the cell cleaning function.
             See blend.utils.clean.
-        xash_size: The size of the XASH value (allowed values are 64, 128, 256, 512)
+        xash_size: The size of the XASH value as bits (allowed values are 64, 128, 256, 512)
+        max_cell_length: The size of the stored cell value as bytes (default 128).
+            Only the first max_cell_length of each string will be stored. If it is negative,
+            only the last max_cell_length will be stored.
 
     Returns:
         A tuple with the table ID (obtained from its path) and the parsed rows.
@@ -250,6 +254,8 @@ def parse_table(
             quadrant_expr = pl.lit(None, pl.Boolean)
 
         clean_expr = _clean(col_name, **clean_args)
+        if max_cell_length:
+            clean_expr = clean_expr.str.head(max_cell_length)
 
         exprs.append(
             pl.struct(
@@ -309,4 +315,3 @@ def calculate_superkey_for_row(cell_values: list, xash_size: int) -> bytes:
             print(cell_values)
         superkey |= calculate_xash(value, xash_size)
     return superkey.to_bytes(16, byteorder="big")
-    # return bytes(f"{superkey:0128b}".encode())

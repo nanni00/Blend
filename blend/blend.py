@@ -1,6 +1,7 @@
+# TODO: max_cell_length also when quering the index?
 from numbers import Number
 from pathlib import Path
-from typing import Callable, Optional, Any
+from typing import Any, Callable, Optional
 
 import pandas as pd
 import polars as pl
@@ -20,7 +21,7 @@ class BLEND:
         clean_function: Optional[Callable] = None,
         clean_args: Optional[dict] = None,
         xash_size: int = 128,
-        disable_xash: bool = False,
+        max_cell_length: int = 128,
     ) -> None:
         """
         Instantiate a BLEND indexer and retriever.
@@ -39,7 +40,7 @@ class BLEND:
         self._clean_args = clean_args if clean_args else {}
 
         self.xash_size = xash_size
-        self.disable_xash = disable_xash
+        self.max_cell_length = max_cell_length
 
     def remove_table(self, table_id: str):
         self.db_handler.remove_table_from_index(table_id)

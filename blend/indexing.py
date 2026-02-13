@@ -1,11 +1,11 @@
 import logging
 import os
+import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from inspect import cleandoc
 from multiprocessing import Manager, Process, Queue
 from pathlib import Path
-import time
 from typing import Optional
 
 import polars as pl
@@ -62,11 +62,12 @@ def _db_worker(
                 break
 
 
-def _process_task(
+def _table_parsing_worker(
     table_path: Path,
     load_opts: Optional[dict],
     clean_args: Optional[dict],
     xash_size: int,
+    max_cell_length: int,
     db_handler: DBHandler,
     queue: Optional[Queue],
     tmp_path: Optional[Path],
@@ -76,6 +77,7 @@ def _process_task(
         load_opts,
         clean_args,
         xash_size,
+        max_cell_length,
     )
 
     if isinstance(df, pl.DataFrame):
@@ -152,17 +154,17 @@ def index_tables(
 
     start_t = time.time()
 
-    # FIX: sometimes this doesn't work at all
-    # even by changhing with different mp_context
-    # (check on polars with multiproc setting),
+    # TODO: work on Windows? (check mp_context-polars)
+    # TODO: Timeout for _process_task/_db_worker?
     with ProcessPoolExecutor(max_workers) as executor:
         futures = {
             executor.submit(
-                _process_task,
+                _table_parsing_worker,
                 tables_path.joinpath(table_id),
                 load_opts,
                 indexer._clean_args,
                 indexer.xash_size,
+                indexer.max_cell_length,
                 indexer.db_handler,  # ty: ignore
                 queue,
                 tmp_path,
@@ -213,94 +215,3 @@ def index_tables(
 
     indexer.db_handler.close()
     return (end_ins_t - start_t, end_idx_t - end_ins_t, end_idx_t - start_t)
-
-
-# def _index_tables_seq(
-#     indexer: BLEND,
-#     tables_path: Path,
-#     log_stdout: bool = False,
-#     logfile_path: Optional[Path] = None,
-#     max_workers: Optional[int] = None,
-#     load_opts: dict = {},
-#     batch_size: Optional[int] = None,
-# ) -> tuple:
-#     """
-#     Index all the tables stored under the given tables path, considering
-#     it as a flat folder with only tables.
-#
-#     :param indexer: A BLEND indexer instance.
-#     :param tables_path: The path to the folder containing the tables to index.
-#     :param logfile_path: The path to a logfile.
-#     :param max_workers: Maximum number of processes to instantiate. (not used - single process)
-#     :param load_opts: A dictionary with Polars scan csv/parquet/... configuration options.
-#     :param batch_size: Batch size as total number of rows inserted at a time into the underlying database (default, one table at a time).
-#     :return: A tuple with timing for the tables parse and insertion time, support indexes creation time and total time.
-#     """
-#     if not tables_path.exists():
-#         raise FileNotFoundError(f"tables path doesn't exist: {tables_path}")
-#
-#     if not batch_size:
-#         batch_size = 0
-#
-#     init_logger(logfile_path, log_stdout)
-#
-#     logger = logging.getLogger(f"blend_logger_{os.getpid()}")
-#
-#     # get IDs of the effective tables
-#     table_ids = os.listdir(tables_path)
-#
-#     # drop the main index if already exists
-#     indexer.db_handler.drop_index_table()
-#
-#     # create the main index
-#     indexer.db_handler.create_index_table()
-#
-#     parsed_tables = 0
-#
-#     start_t = time()
-#
-#     data_to_store = []
-#
-#     for table_id in tqdm(
-#         table_ids, desc="Parsing and storing tables", disable=not log_stdout
-#     ):
-#         table_path = tables_path.joinpath(table_id)
-#         table_id, df = parse_table(
-#             table_path,
-#             load_opts,
-#             indexer._clean_function_args,
-#             indexer.xash_size,
-#         )
-#
-#         if not isinstance(df, pl.DataFrame):
-#             continue
-#
-#         data_to_store.append(df)
-#
-#         if sum(_df.height for _df in data_to_store) >= batch_size:
-#             # print("Large insert!")
-#             t = time()
-#             indexer.db_handler.save_data_to_duckdb(data_to_store)
-#             data_to_store.clear()
-#             t = time() - t
-#             # print(f"Insert time: {round(t, 3)} s")
-#         parsed_tables += 1
-#
-#     indexer.db_handler.save_data_to_duckdb(data_to_store)
-#     end_ins_t = time()
-#
-#     # create indexes
-#     s = f"""
-#         Tables ingestion completed.
-#         Correctly parsed {parsed_tables}.
-#         Creating indexes...
-#         """
-#     logger.info(cleandoc(s))
-#
-#     indexer.db_handler.create_column_indexes()
-#     end_idx_t = time()
-#
-#     logger.info("Index creation completed.")
-#
-#     indexer.db_handler.close()
-#     return (end_ins_t - start_t, end_idx_t - end_ins_t, end_idx_t - start_t)
