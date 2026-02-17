@@ -8,7 +8,8 @@ import numpy as np
 from tqdm import tqdm
 
 # FIX: include polars
-import pandas as pd
+# import pandas as pd
+import polars as pl
 
 from ...db import DBHandler
 from ...utils import calculate_xash
@@ -21,13 +22,13 @@ TQDM_RIGHT_PAD = 31
 class MultiColumnOverlap(Seeker):
     def __init__(
         self,
-        input_df: pd.DataFrame,
+        table: pl.DataFrame,  # pd.DataFrame,
         k: int = 10,
         xash_size: int = 128,
         verbose: bool = False,
     ) -> None:
         super().__init__(k)
-        self.input = input_df.copy().astype(str)
+        self.table = table  # input_df.copy().astype(str)
         self.xash_size = xash_size
         self.verbose = verbose
 
@@ -50,7 +51,8 @@ class MultiColumnOverlap(Seeker):
         sql = self.base_sql.replace("$TOPK$", f"{self.k}")
 
         # The first column is treated outside the loop below
-        firstcolumn_values = self.input[self.input.columns.values[0]]
+        # self.input[self.input.columns.values[0]]
+        firstcolumn_values = self.table.to_series(0).cast(pl.String)
         sql = sql.replace(
             "$TOKENS$",
             db.create_sql_list_str(db.clean_value_collection(firstcolumn_values)),
@@ -59,8 +61,10 @@ class MultiColumnOverlap(Seeker):
         # For each column (except the first one) add an inner join to
         # the base SQL query, including a join on its specific values
         innerjoins = ""
-        for column_index in range(1, len(self.input.columns.values)):
-            column_values = self.input[self.input.columns.values[column_index]]
+        # for column_index in range(1, len(self.input.columns.values)):
+        for column_index in range(1, len(self.table.columns)):
+            # [self.input.columns.values[column_index]]
+            column_values = self.table.to_series(column_index).cast(pl.String)
             column_name = db.random_subquery_name()
 
             value_collections = db.clean_value_collection(column_values)
@@ -79,9 +83,11 @@ class MultiColumnOverlap(Seeker):
             # other_select_columns = f' , clm_{column_name}.cell_value, clm_{column_name}.column_id $OTHER_SELECT_COLUMNS$ '
             # sql = sql.replace('$OTHER_SELECT_COLUMNS$', other_select_columns)
 
-        sql = sql.replace("$OTHER_SELECT_COLUMNS$", "")
-        sql = sql.replace("$INNERJOINS$", innerjoins)
-        sql = sql.replace("$ADDITIONALS$", additionals)
+        sql = (
+            sql.replace("$OTHER_SELECT_COLUMNS$", "")
+            .replace("$INNERJOINS$", innerjoins)
+            .replace("$ADDITIONALS$", additionals)
+        )
 
         candidates = db.execute_and_fetchall(sql)
 
@@ -125,7 +131,8 @@ class MultiColumnOverlap(Seeker):
         return 10
 
     def ml_cost(self, db: DBHandler) -> float:
-        return self._predict_runtime([list(col) for col in self.input.values.T], db)
+        # return self._predict_runtime([list(col) for col in self.input.values.T], db)
+        raise NotImplementedError("Still to port to Polars")
 
     def run_filter(
         self,
@@ -162,19 +169,30 @@ class MultiColumnOverlap(Seeker):
 
         top_joinable_tables = []  # each item includes: Tableid, joinable_rows
 
-        query_columns = self.input.columns.values
+        # query_columns = self.input.columns.values
+        query_columns = self.table.columns
 
         # Calculate superkey for all input rows
-        input_cpy = self.input.copy()
-        input_cpy["super_key"] = input_cpy.apply(
-            lambda row: self.hash_row_vals(row, xash_size), axis=1
+        # input_cpy = self.input.copy()
+        # input_cpy["super_key"] = input_cpy.apply(
+        #     lambda row: self.hash_row_vals(row, xash_size), axis=1
+        # )
+
+        df = self.table.with_columns(
+            self.table.map_rows(
+                lambda row: str(self.hash_row_vals(row, xash_size)), pl.String
+            )
+            .get_column("map")
+            .alias("super_key")
         )
 
         # Get all rows grouped by first token of each row
-        g = input_cpy.groupby([input_cpy.columns.values[0]])
+        # g = input_cpy.groupby([input_cpy.columns.values[0]])
+        g = df.group_by(df.columns[0])
         gd = defaultdict(list)
-        for key, item in g:
-            gd[str(key[0])] = g.get_group((key[0],)).values
+        for (key,), data in g:
+            # gd[str(key[0])] = g.get_group((key[0],)).values
+            gd[str(key)] = data.rows()
 
         candidate_external_row_ids = []
         candidate_external_col_ids = []
@@ -185,7 +203,8 @@ class MultiColumnOverlap(Seeker):
         total_approved = 0
         total_match = 0
         overlaps_dict = {}
-        super_key_index = list(input_cpy.columns.values).index("super_key")
+        super_key_index = list(df.columns).index("super_key")
+        # super_key_index = list(input_cpy.columns.values).index("super_key")
         checked_tables = 0
         max_table_check = 10000000
 
@@ -234,7 +253,7 @@ class MultiColumnOverlap(Seeker):
                 already_checked_hits += 1
 
                 for input_row in relevant_input_rows:
-                    if (input_row[super_key_index] | superkey) == superkey:
+                    if (int(input_row[super_key_index]) | superkey) == superkey:
                         candidate_external_row_ids.append(rowid)
                         set_of_rowids.add(rowid)
                         candidate_external_col_ids.append(colid)
@@ -256,35 +275,56 @@ class MultiColumnOverlap(Seeker):
             #
             # Below, we don't return all the results at once, but with a fetch-yield approach,
             # because sometimes there are very many many candidate PLs...
-            joint_distinct_rows = tuple(map(int, set(candidate_external_row_ids)))
-            joint_distinct_tableids = tuple(map(str, set(candidate_table_ids)))
+            # joint_distinct_rows = tuple(map(int, set(candidate_external_row_ids)))
+            # joint_distinct_tableids = tuple(map(str, set(candidate_table_ids)))
 
-            candidate_table_rows_as_tuple = [
-                {"table_id": str(t[0]), "row_id": int(t[1])}
-                for t in candidate_table_rows
-            ]
+            candidate_t_ids = [str(t[0]) for t in candidate_table_rows]
+            candidate_r_ids = [int(t[1]) for t in candidate_table_rows]
 
-            # NOTE: are joint_distinct_tableids and joint_distinct_row
-            # really necessary for this step? Aren't they already included
-            # thanks to the last WHERE-condition?
             query = """
-            SELECT
-                table_id, row_id,
-                column_id, cell_value
-            FROM (
-                SELECT *
-                FROM all_tables
-                WHERE table_id IN ?
-                AND row_id IN ?
-                AND (table_id, row_id) IN (SELECT UNNEST(?, recursive := True))
-            );
+            SELECT 
+                t.table_id, 
+                t.row_id, 
+                t.column_id, 
+                t.cell_value
+            FROM all_tables t
+            INNER JOIN (
+                SELECT UNNEST(?) AS table_id, UNNEST(?) AS row_id
+            ) AS c 
+            ON t.table_id = c.table_id AND t.row_id = c.row_id;
             """
 
             params = (
-                joint_distinct_tableids,
-                joint_distinct_rows,
-                candidate_table_rows_as_tuple,
+                candidate_t_ids,
+                candidate_r_ids,
             )
+
+            # candidate_table_rows_as_tuple = [
+            #     {"table_id": str(t[0]), "row_id": int(t[1])}
+            #     for t in candidate_table_rows
+            # ]
+            #
+            # # NOTE: are joint_distinct_tableids and joint_distinct_row
+            # # really necessary for this step? Aren't they already included
+            # # thanks to the last WHERE-condition?
+            # query = """
+            # SELECT
+            #     table_id, row_id,
+            #     column_id, cell_value
+            # FROM (
+            #     SELECT *
+            #     FROM all_tables
+            #     WHERE table_id IN ?
+            #     AND row_id IN ?
+            #     AND (table_id, row_id) IN (SELECT UNNEST(?, recursive := True))
+            # );
+            # """
+            #
+            # params = (
+            #     joint_distinct_tableids,
+            #     joint_distinct_rows,
+            #     candidate_table_rows_as_tuple,
+            # )
 
             pls_to_evaluate = db.execute_and_fetchyield(query, params)
 
@@ -293,10 +333,19 @@ class MultiColumnOverlap(Seeker):
 
             if verbose:
                 logger.debug("Evaluating remaining posting lists (fetch-yield)...")
-            for table_id, row_id, col_id, cell_value in pls_to_evaluate:
+            total_fetched_tuples = 0
+            for table_id, row_id, col_id, cell_value in tqdm(
+                pls_to_evaluate,
+                desc="Fetching candidate tuples".ljust(TQDM_RIGHT_PAD, " "),
+                disable=not verbose,
+            ):
                 # here we are sure that (table_id, row_id) tuples are in candidate_table_rows,
                 # since this condition is used in the above SQL query
                 table_row_dict[(table_id, row_id)][col_id] = cell_value
+                total_fetched_tuples += 1
+
+            if verbose:
+                logger.debug(f"Fetched {total_fetched_tuples}")
 
             for i in tqdm(
                 range(len(candidate_table_rows)),

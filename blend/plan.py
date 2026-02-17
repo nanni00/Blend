@@ -6,7 +6,6 @@ from .operators import Combiner, Operator, Seeker
 
 class Plan(object):
     def __init__(self, db: DBHandler) -> None:
-        # self.DB = DBHandler()
         self.DB = db
         self._operators = dict()
         self._terminal_candidates: set[str] = set()

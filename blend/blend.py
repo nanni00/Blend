@@ -3,7 +3,6 @@ from numbers import Number
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import pandas as pd
 import polars as pl
 
 from .db import DBHandler
@@ -18,10 +17,13 @@ class BLEND:
     def __init__(
         self,
         db_path: Path,
+        index_table: str = "all_tables",
         clean_function: Optional[Callable] = None,
         clean_args: Optional[dict] = None,
         xash_size: int = 128,
         max_cell_length: Optional[int] = 128,
+        use_ml_optimizer: bool = False,
+        freq_dict_path: Optional[Path] = None,
     ) -> None:
         """Instantiate a BLEND indexer and retriever.
 
@@ -35,7 +37,9 @@ class BLEND:
                 only the last max_cell_length will be stored.
         """
         self._db_path = db_path
-        self.db_handler: DBHandler = DBHandler(self._db_path)
+        self.db_handler: DBHandler = DBHandler(
+            self._db_path, index_table, use_ml_optimizer, freq_dict_path
+        )
 
         # Clean function and relative parameters
         self._clean_function = clean_function if clean_function else clean
@@ -47,8 +51,11 @@ class BLEND:
     def remove_table(self, table_id: str):
         self.db_handler.remove_table_from_index(table_id)
 
-    def get_table(self, table_id: str) -> pl.DataFrame | pd.DataFrame:
+    def get_table(self, table_id: str) -> pl.DataFrame:
         return self.db_handler.get_table_from_index(table_id)
+
+    def extract_token_frequencies_from_db(self) -> pl.DataFrame:
+        return self.db_handler.extract_token_frequencies_from_db()
 
     def close(self):
         self.db_handler.close()
@@ -94,14 +101,18 @@ class BLEND:
         return plan.run()
 
     def multi_column_join_search(
-        self, table: list[list[Any]], k: int, clean: bool = True, verbose: bool = False
+        self,
+        table: list[list[Any]] | pl.DataFrame,
+        k: int,
+        clean: bool = True,
+        verbose: bool = False,
     ) -> list[tuple[str, list, float]]:
         """Execute a multi-column join search on the given table.
 
         This method is built on top of the MATE discovery algorithm.
 
         Args:
-            table: A list-of-rows representing a table.
+            table: A list-of-rows representing a table or a Polars DataFrame.
             k: The number of results to return.
             clean: If True, apply the default clean function on the input values.
             verbose: If True, print verbose output.
@@ -109,18 +120,37 @@ class BLEND:
         Returns:
             A list of tuples <table id, column numbers, joinability score>.
         """
+        if not isinstance(table, pl.DataFrame):
+            table = pl.DataFrame(table, orient="row")
+
         if clean:
-            table = [
-                [self._clean_function(cell, **self._clean_args) for cell in row]
-                for row in table
-            ]
-        table = [
-            [_truncate(cell, self.max_cell_length) for cell in row] for row in table
-        ]
-        df = pd.DataFrame(table)
+            table = table.with_columns(
+                [
+                    pl.col(col).map_elements(
+                        lambda s: self._clean_function(s, **self._clean_args), pl.String
+                    )
+                    for col in table.columns
+                ]
+            )
+
+        if isinstance(self.max_cell_length, int):
+            if self.max_cell_length > 0:
+                table = table.with_columns(
+                    [
+                        pl.col(col).str.head(self.max_cell_length)
+                        for col in table.columns
+                    ]
+                )
+            elif self.max_cell_length < 0:
+                table = table.with_columns(
+                    [
+                        pl.col(col).str.tail(self.max_cell_length)
+                        for col in table.columns
+                    ]
+                )
 
         plan = Plan(self.db_handler)
-        plan.add("multi_column_join", seekers.MC(df, k, self.xash_size, verbose))
+        plan.add("multi_column_join", seekers.MC(table, k, self.xash_size, verbose))
         return plan.run()
 
     def correlation_search(
@@ -151,7 +181,9 @@ class BLEND:
 
         return plan.run()
 
-    def union_search(self, table: list[list[Any]], k: int, clean: bool = True):
+    def union_search(
+        self, table: list[list[Any]] | pl.DataFrame, k: int, clean: bool = True
+    ):
         """Execute a union search on the given table.
 
         This method exeutes a union of the results given by a single-column search
@@ -162,24 +194,43 @@ class BLEND:
             k: The number of results to return.
             clean: If True, apply the default clean function on the input values.
         """
-        if clean:
-            table = [
-                [self._clean_function(cell, **self._clean_args) for cell in row]
-                for row in table
-            ]
-        table = [
-            [_truncate(cell, self.max_cell_length) for cell in row] for row in table
-        ]
+        if not isinstance(table, pl.DataFrame):
+            table = pl.DataFrame(table, orient="row")
 
-        # switch to a list-of-columns view of the table
-        table = list(zip(*table))
+        if clean:
+            table = table.with_columns(
+                [
+                    pl.col(col).map_elements(
+                        lambda s: self._clean_function(s, **self._clean_args), pl.String
+                    )
+                    for col in table.columns
+                ]
+            )
+
+        if isinstance(self.max_cell_length, int):
+            if self.max_cell_length > 0:
+                table = table.with_columns(
+                    [
+                        pl.col(col).str.head(self.max_cell_length)
+                        for col in table.columns
+                    ]
+                )
+            elif self.max_cell_length < 0:
+                table = table.with_columns(
+                    [
+                        pl.col(col).str.tail(self.max_cell_length)
+                        for col in table.columns
+                    ]
+                )
 
         plan = Plan(self.db_handler)
-        for n_column, column in enumerate(table):
-            plan.add(str(n_column), seekers.SC(column, k * 10))
+        for n_column, column in enumerate(table.columns):
+            plan.add(str(n_column), seekers.SC(table.get_column(column), k * 10))
 
         plan.add(
-            "union", combiners.Counter(k=k), inputs=list(map(str, range(len(table))))
+            "union",
+            combiners.Counter(k=k),
+            inputs=list(map(str, range(len(table.columns)))),
         )
 
         return plan.run()

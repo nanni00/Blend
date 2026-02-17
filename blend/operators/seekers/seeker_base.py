@@ -11,20 +11,23 @@ class Seeker(Operator, ABC):
 
         self._cached_predicted_runtime = None
 
-        # FIX: self.DB is None by default now, and
-        # is not initiliased in any __init__ call
-        if False:  # or self.DB.USE_ML_OPTIMIZER:
+        if isinstance(self.DB, DBHandler) and self.DB.use_ml_optimizer:
             from xgboost import XGBRegressor
 
+            print("Loading model...")
             self.model = XGBRegressor()
             self.model.load_model(
-                Path(__file__).parent / f"{self.__class__.__name__}_model.json"
+                Path(__file__).parent.parent
+                / "models"
+                / f"{self.__class__.__name__}_model.json"
             )
         else:
             self.model = None
             self._cached_predicted_runtime = 1
 
     def _predict_runtime(self, columns: list, db: DBHandler) -> float:
+        if self.model is None:
+            raise ValueError()
         if self._cached_predicted_runtime is not None:
             return self._cached_predicted_runtime
 

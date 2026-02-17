@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, Union
 
 import duckdb
-import pandas as pd
 import polars as pl
 
 
@@ -28,8 +27,7 @@ class DBHandler(object):
         db_path: Path,
         index_table: Optional[str] = None,
         use_ml_optimizer: bool = False,
-        freq_dict_path: str | None = None,
-        use_pandas: bool = True,
+        freq_dict_path: Optional[Path] = None,
     ) -> None:
         """Initializes the DBHandler.
 
@@ -38,7 +36,6 @@ class DBHandler(object):
             index_table: The name of the table used for indexing. Defaults to "all_tables".
             use_ml_optimizer: Whether to use the ML optimizer. Defaults to False.
             freq_dict_path: Path to the frequency dictionary CSV file. Required if use_ml_optimizer is True.
-            use_pandas: Whether to return results as pandas DataFrames. Defaults to True.
 
         Raises:
             FileNotFoundError: If the parent directory of db_path does not exist.
@@ -47,7 +44,6 @@ class DBHandler(object):
         self.connection = None
         self.cursor = None
         self.dbms = "duckdb"  # we'll use only duckdb
-        self.use_pandas = use_pandas
 
         self.db_path = db_path
         if not self.db_path.parent.exists():
@@ -55,7 +51,7 @@ class DBHandler(object):
                 f"DB directory doesn't exist: {self.db_path.parent}"
             )
 
-        self.index_table = index_table if isinstance(index_table, str) else "all_tables"
+        self.index_table = index_table if index_table is not None else "all_tables"
         self.db_name = self.db_path.stem.replace("-", "_")
 
         self.use_ml_optimizer = use_ml_optimizer
@@ -68,7 +64,9 @@ class DBHandler(object):
                 "Frequencies file must be provided to use ML optimizer"
             )
 
-            df = pd.read_csv(freq_dict_path)
+            df = pl.read_csv(
+                freq_dict_path, schema={"tokenized": pl.String, "frequency": pl.Int64}
+            )
             self.frequency_dict = dict(zip(df["tokenized"], df["frequency"]))
         else:
             self.frequency_dict = {}
@@ -92,7 +90,7 @@ class DBHandler(object):
                 quadrant             BOOLEAN,
                 cell_value           VARCHAR,
                 super_key            BYTEA,
-                PRIMARY KEY (table_id, column_id, row_id)
+                PRIMARY KEY (table_id, row_id, column_id)
             );""")
 
     def create_column_indexes(self):
@@ -172,7 +170,7 @@ class DBHandler(object):
                     for row in rows:
                         yield row
 
-    def get_table_from_index(self, table_id: str) -> pd.DataFrame | pl.DataFrame:
+    def get_table_from_index(self, table_id: str) -> pl.DataFrame:
         sql = f"""
         SELECT cell_value, column_id, row_id
         FROM all_tables
@@ -181,17 +179,27 @@ class DBHandler(object):
 
         results = self.execute_and_fetchall(sql)
 
-        df = pd.DataFrame(
-            results, columns=["cell_value", "column_id", "row_id"], dtype=str
+        df = pl.DataFrame(
+            results, schema={"cell_value": str, "column_id": int, "row_id": int}
         )
-        df = df.drop_duplicates()
-        df = df.pivot(index="row_id", columns="column_id", values="cell_value")
-        df.index.name = None
-        df.columns.name = None
 
-        df = df if self.use_pandas else pl.from_pandas(df)
+        df = df.unique()
+        df = df.pivot(index="row_id", on="column_id", values="cell_value")
 
         return df
+
+    def extract_token_frequencies_from_db(self) -> pl.DataFrame:
+        sql = """
+            SELECT cell_value AS tokenized, COUNT(cell_value) AS frequency
+            FROM all_tables
+            GROUP BY cell_value
+            ORDER BY cell_value
+        """
+
+        results = self.execute_and_fetchall(sql)
+        return pl.DataFrame(
+            results, schema=[("tokenized", str), ("frequency", int)], orient="row"
+        )
 
     def table_ids_to_sql(self, table_ids: list[int]) -> str:
         if len(table_ids) == 0:
