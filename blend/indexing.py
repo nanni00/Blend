@@ -179,49 +179,52 @@ def index_tables(
 
     # TODO: work on Windows? (check mp_context-polars)
     # TODO: Timeout for _process_task/_db_worker?
-    with ProcessPoolExecutor(max_workers) as executor:
-        futures = {
-            executor.submit(
-                _table_parsing_worker,
-                tables_path.joinpath(table_id),
-                load_opts,
-                indexer._clean_args,
-                indexer.xash_size,
-                indexer.max_cell_length,
-                indexer.db_handler,  # ty: ignore
-                queue,
-                tmp_path,
-            )
-            for table_id in list(table_ids)
-        }
+    try:
+        with ProcessPoolExecutor(max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _table_parsing_worker,
+                    tables_path.joinpath(table_id),
+                    load_opts,
+                    indexer._clean_args,
+                    indexer.xash_size,
+                    indexer.max_cell_length,
+                    indexer.db_handler,  # ty: ignore
+                    queue,
+                    tmp_path,
+                )
+                for table_id in list(table_ids)
+            }
 
-        non_empty_tables = 0
+            non_empty_tables = 0
 
-        for future in tqdm(
-            as_completed(futures),
-            desc="Parsing and storing tables: ",
-            total=len(table_ids),
-            disable=not log_stdout,
-        ):
-            try:
-                table_id, success = future.result()
-                non_empty_tables += success
-            except Exception as e:
-                logger.error(f"[error:{type(e)}][msg:{e}]")
-                db_writer.join()
-                raise e
+            for future in tqdm(
+                as_completed(futures),
+                desc="Parsing and storing tables: ",
+                total=len(table_ids),
+                disable=not log_stdout,
+            ):
+                try:
+                    table_id, success = future.result()
+                    non_empty_tables += success
+                except Exception as e:
+                    logger.error(f"[error:{type(e)}][msg:{e}]")
 
-    end_ins_t = time.time()
+    finally:
+        end_ins_t = time.time()
 
-    # Stop the DB worker
-    if queue:
-        queue.put(None)
-    elif tmp_path:
-        while len(os.listdir(tmp_path)) != 0:
-            continue
-        with open(tmp_path.joinpath("STOP"), "w") as file:
-            file.write("STOP")
-    db_writer.join()
+        # Stop the DB worker
+        if queue:
+            queue.put(None)
+        elif tmp_path:
+            while len(os.listdir(tmp_path)) != 0:
+                continue
+            with open(tmp_path.joinpath("STOP"), "w") as file:
+                file.write("STOP")
+        db_writer.join(30)
+        if db_writer.is_alive():
+            db_writer.terminate()
+            db_writer.join()
 
     # create indexes
     s = f"""
@@ -234,7 +237,7 @@ def index_tables(
     indexer.db_handler.create_column_indexes()
     end_idx_t = time.time()
 
-    logger.info("Index creation completed.")
-
+    logger.debug("Closing DB...")
     indexer.db_handler.close()
+    logger.info("Index creation completed.")
     return (end_ins_t - start_t, end_idx_t - end_ins_t, end_idx_t - start_t)
