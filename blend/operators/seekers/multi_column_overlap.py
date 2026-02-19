@@ -140,6 +140,7 @@ class MultiColumnOverlap(Seeker):
         posting_lists: list,
         db: DBHandler,
         xash_size: int = 128,
+        chunk_size: int = 100_000,
         verbose: bool = False,
     ) -> list[tuple[int, str, float]]:
         logger = logging.getLogger(f"blend_logger_{os.getpid()}")
@@ -266,50 +267,51 @@ class MultiColumnOverlap(Seeker):
 
             # We get a list of posting lists to evaluate as candidate matches, fetched
             # from the combination of the given table_id and row_id
-            #
-            # Below, we don't return all the results at once, but with a fetch-yield approach,
-            # because sometimes there are very many many candidate PLs...
-            # joint_distinct_rows = tuple(map(int, set(candidate_external_row_ids)))
-            # joint_distinct_tableids = tuple(map(str, set(candidate_table_ids)))
-
             candidate_t_ids = [str(t[0]) for t in candidate_table_rows]
             candidate_r_ids = [int(t[1]) for t in candidate_table_rows]
 
-            query = """
-            SELECT 
-                t.table_id, 
-                t.row_id, 
-                t.column_id, 
-                t.cell_value
-            FROM all_tables t
-            INNER JOIN (
-                SELECT UNNEST(?) AS table_id, UNNEST(?) AS row_id
-            ) AS c 
-            ON t.table_id = c.table_id AND t.row_id = c.row_id;
-            """
-
-            params = (
-                candidate_t_ids,
-                candidate_r_ids,
-            )
-
-            pls_to_evaluate = db.execute_and_fetchyield(query, params)
-
             # contains rowid that each rowid has dict that maps colids to tokenized
             table_row_dict = defaultdict(dict)
-
-            if verbose:
-                logger.debug("Evaluating remaining posting lists (fetch-yield)...")
             total_fetched_tuples = 0
-            for table_id, row_id, col_id, cell_value in tqdm(
-                pls_to_evaluate,
+
+            for i in tqdm(
+                range(0, len(candidate_table_rows) + chunk_size, chunk_size),
+                ncols=TQDM_NCOLS,
                 desc="Fetching candidate tuples".ljust(TQDM_RIGHT_PAD, " "),
-                disable=not verbose,
             ):
-                # here we are sure that (table_id, row_id) tuples are in candidate_table_rows,
-                # since this condition is used in the above SQL query
-                table_row_dict[(table_id, row_id)][col_id] = cell_value
-                total_fetched_tuples += 1
+                query = """
+                SELECT 
+                    t.table_id, 
+                    t.row_id, 
+                    t.column_id, 
+                    t.cell_value
+                FROM all_tables t
+                INNER JOIN (
+                    SELECT UNNEST(?) AS table_id, UNNEST(?) AS row_id
+                ) AS c 
+                ON t.table_id = c.table_id AND t.row_id = c.row_id;
+                """
+
+                params = (
+                    candidate_t_ids[i : i + chunk_size],
+                    candidate_r_ids[i : i + chunk_size],
+                )
+
+                pls_to_evaluate = db.execute_and_fetchyield(query, params)
+
+                if verbose:
+                    logger.debug("Evaluating remaining posting lists (fetch-yield)...")
+
+                for table_id, row_id, col_id, cell_value in tqdm(
+                    pls_to_evaluate,
+                    desc="Fetching candidate tuples".ljust(TQDM_RIGHT_PAD, " "),
+                    ncols=TQDM_NCOLS,
+                    disable=True,
+                ):
+                    # here we are sure that (table_id, row_id) tuples are in candidate_table_rows,
+                    # since this condition is used in the above SQL query
+                    table_row_dict[(table_id, row_id)][col_id] = cell_value
+                    total_fetched_tuples += 1
 
             if verbose:
                 logger.debug(f"Fetched {total_fetched_tuples}")
