@@ -1,4 +1,3 @@
-# TODO: use_ml_optimizer and toker_freq_dict file parameter for main class
 from numbers import Number
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -8,7 +7,7 @@ import polars as pl
 from .db import DBHandler
 from .operators import combiners, seekers
 from .plan import Plan
-from .utils import clean, _truncate
+from .utils import _truncate, clean
 
 __all__ = ["BLEND"]
 

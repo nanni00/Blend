@@ -7,8 +7,6 @@ import logging
 import numpy as np
 from tqdm import tqdm
 
-# FIX: include polars
-# import pandas as pd
 import polars as pl
 
 from ...db import DBHandler
@@ -88,6 +86,9 @@ class MultiColumnOverlap(Seeker):
             .replace("$INNERJOINS$", innerjoins)
             .replace("$ADDITIONALS$", additionals)
         )
+
+        if self.verbose:
+            logger.debug("Fetching candidates...")
 
         candidates = db.execute_and_fetchall(sql)
 
@@ -169,15 +170,9 @@ class MultiColumnOverlap(Seeker):
 
         top_joinable_tables = []  # each item includes: Tableid, joinable_rows
 
-        # query_columns = self.input.columns.values
         query_columns = self.table.columns
 
         # Calculate superkey for all input rows
-        # input_cpy = self.input.copy()
-        # input_cpy["super_key"] = input_cpy.apply(
-        #     lambda row: self.hash_row_vals(row, xash_size), axis=1
-        # )
-
         df = self.table.with_columns(
             self.table.map_rows(
                 lambda row: str(self.hash_row_vals(row, xash_size)), pl.String
@@ -187,7 +182,6 @@ class MultiColumnOverlap(Seeker):
         )
 
         # Get all rows grouped by first token of each row
-        # g = input_cpy.groupby([input_cpy.columns.values[0]])
         g = df.group_by(df.columns[0])
         gd = defaultdict(list)
         for (key,), data in g:
@@ -245,7 +239,7 @@ class MultiColumnOverlap(Seeker):
                     break
 
                 rowid = hit[0]
-                superkey = int.from_bytes(hit[1])
+                superkey = int.from_bytes(hit[1], byteorder="big")
                 token = hit[2]
                 colid = hit[3]
                 relevant_input_rows = gd[token]
@@ -298,33 +292,6 @@ class MultiColumnOverlap(Seeker):
                 candidate_t_ids,
                 candidate_r_ids,
             )
-
-            # candidate_table_rows_as_tuple = [
-            #     {"table_id": str(t[0]), "row_id": int(t[1])}
-            #     for t in candidate_table_rows
-            # ]
-            #
-            # # NOTE: are joint_distinct_tableids and joint_distinct_row
-            # # really necessary for this step? Aren't they already included
-            # # thanks to the last WHERE-condition?
-            # query = """
-            # SELECT
-            #     table_id, row_id,
-            #     column_id, cell_value
-            # FROM (
-            #     SELECT *
-            #     FROM all_tables
-            #     WHERE table_id IN ?
-            #     AND row_id IN ?
-            #     AND (table_id, row_id) IN (SELECT UNNEST(?, recursive := True))
-            # );
-            # """
-            #
-            # params = (
-            #     joint_distinct_tableids,
-            #     joint_distinct_rows,
-            #     candidate_table_rows_as_tuple,
-            # )
 
             pls_to_evaluate = db.execute_and_fetchyield(query, params)
 

@@ -2,8 +2,7 @@ from numbers import Number
 
 import numpy as np
 
-# FIX: move to pure polars syntax
-import pandas as pd
+import polars as pl
 
 from ...db import DBHandler
 from .seeker_base import Seeker
@@ -19,22 +18,20 @@ class Correlation(Seeker):
     ) -> None:
         super().__init__(k)
 
-        # NaNs are dropped and duplicates are removed
-        # by grouping and aggregating by the average
         grouped = (
-            pd.DataFrame({"source": source_values, "target": target_values})
-            .dropna()
-            .groupby("source")
+            pl.DataFrame({"source": source_values, "target": target_values})
+            .drop_nulls()
+            .group_by("source")
             .mean()
         )
 
         # the input source save the index values, which,
         # after grouping, become the source values
-        self.input_source = grouped.index.values
+        self.input_source = grouped.get_column("source")  #  .index.values
 
         # Here we keep the numerical values (i.e. those
         # on which we actually compute the correlation)
-        self.input_target = grouped["target"].values
+        self.input_target = grouped.get_column("target")  # ["target"].values
 
         # BLEND makes more flexible the hash size
         self.hash_size = hash_size
@@ -101,8 +98,7 @@ class Correlation(Seeker):
         # create an array of 0/1 values, where 1 if the relative target
         # value is above the average of the target numbers, 0 otherwise
         # the 0/1 value, is basically the quadrant indicator
-        self.input_target = self.input_target.astype(float)
-        target_average = np.mean(self.input_target)
+        target_average = self.input_target.mean()
         target_int = np.where(self.input_target >= target_average, 1, 0).astype(int)
 
         # clean the string values (remove 'nan', etc)
@@ -118,10 +114,12 @@ class Correlation(Seeker):
             [key for key, qdr in zip(self.input_source, target_int) if qdr == 1]
         )
 
-        sql = self.base_sql.replace("$TOPK$", str(self.k))
-        sql = sql.replace("$ADDITIONALS$", additionals)
-        sql = sql.replace("$FALSETOKENS$", source_0)
-        sql = sql.replace("$TRUETOKENS$", source_1)
+        sql = (
+            self.base_sql.replace("$TOPK$", str(self.k))
+            .replace("$ADDITIONALS$", additionals)
+            .replace("$FALSETOKENS$", source_0)
+            .replace("$TRUETOKENS$", source_1)
+        )
 
         return sql
 

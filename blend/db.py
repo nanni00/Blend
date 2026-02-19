@@ -145,10 +145,15 @@ class DBHandler(object):
         query = self.clean_query(query)
         query = query.replace("TO_BITSTRING(super_key)", "super_key")
 
-        with duckdb.connect(self.db_path, read_only=True) as connection:
+        results = []
+        connection = duckdb.connect(self.db_path, read_only=True)
+        try:
             with connection.cursor() as cursor:
                 cursor.execute(query)
-                return cursor.fetchall()
+                results = cursor.fetchall()  # ty: ignore
+        finally:
+            connection.close()
+        return results  # ty: ignore
 
     def execute_and_fetchyield(self, query: str, params: Optional[tuple] = None):
         """Executes a query and yields results in batches.
@@ -163,12 +168,16 @@ class DBHandler(object):
         query = self.clean_query(query)
         query = query.replace("TO_BITSTRING(super_key)", "super_key")
 
-        with duckdb.connect(self.db_path, read_only=True) as connection:
-            with connection.cursor() as cursor:
+        conn = duckdb.connect(self.db_path, read_only=True)
+
+        try:
+            with conn.cursor() as cursor:
                 cursor.execute(query, params)
-                while rows := cursor.fetchmany(size=1000):
+                while rows := cursor.fetchmany(size=500):
                     for row in rows:
                         yield row
+        finally:
+            conn.close()
 
     def get_table_from_index(self, table_id: str) -> pl.DataFrame:
         sql = f"""
