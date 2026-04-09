@@ -1,3 +1,4 @@
+import os
 import logging
 import string
 import sys
@@ -86,7 +87,7 @@ def init_logger(logfile: Optional[Path] = None, stdout: bool = False):
     Returns:
         The configured logger object.
     """
-    logger = logging.getLogger("BLEND")
+    logger = logging.getLogger(f"blend_logger_{os.getpid()}")
     logger.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter(

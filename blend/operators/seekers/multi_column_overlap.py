@@ -169,6 +169,8 @@ class MultiColumnOverlap(Seeker):
             posting_lists_dict[table].append((row, superkey, token, colid))
             posting_lists_cand_struct[(table, row)] = [tokens, cols]
 
+        #############################################################################################################
+
         top_joinable_tables = []  # each item includes: Tableid, joinable_rows
 
         query_columns = self.table.columns
@@ -186,7 +188,6 @@ class MultiColumnOverlap(Seeker):
         g = df.group_by(df.columns[0])
         gd = defaultdict(list)
         for (key,), data in g:
-            # gd[str(key[0])] = g.get_group((key[0],)).values
             gd[str(key)] = data.rows()
 
         candidate_external_row_ids = []
@@ -199,16 +200,17 @@ class MultiColumnOverlap(Seeker):
         total_match = 0
         overlaps_dict = {}
         super_key_index = list(df.columns).index("super_key")
-        # super_key_index = list(input_cpy.columns.values).index("super_key")
         checked_tables = 0
         max_table_check = 10000000
 
+        posting_lists_table_ids = sorted(
+            posting_lists_dict,
+            key=lambda k: len(posting_lists_dict[k]),
+            reverse=True,
+        )[:max_table_check]
+
         for tableid in tqdm(
-            sorted(
-                posting_lists_dict,
-                key=lambda k: len(posting_lists_dict[k]),
-                reverse=True,
-            )[:max_table_check],
+            posting_lists_table_ids,
             desc="Checking candidate tables".ljust(TQDM_RIGHT_PAD, " "),
             disable=not verbose,
             ncols=TQDM_NCOLS,
@@ -256,15 +258,9 @@ class MultiColumnOverlap(Seeker):
                         candidate_table_ids.append(tableid)
                         candidate_table_rows.append((tableid, rowid))
 
-        if len(candidate_external_row_ids) == 0 and verbose:
-            logger.debug("No candidate external row IDs found.")
+        #############################################################################################################
 
         if len(candidate_external_row_ids) > 0:
-            if verbose:
-                logger.debug(
-                    f"#Candidate external row IDs: {len(candidate_external_row_ids)}"
-                )
-
             # We get a list of posting lists to evaluate as candidate matches, fetched
             # from the combination of the given table_id and row_id
             candidate_t_ids = [str(t[0]) for t in candidate_table_rows]
@@ -313,6 +309,8 @@ class MultiColumnOverlap(Seeker):
                     table_row_dict[(table_id, row_id)][col_id] = cell_value
                     total_fetched_tuples += 1
 
+            #############################################################################################################
+
             if verbose:
                 logger.debug(f"Fetched {total_fetched_tuples}")
 
@@ -350,6 +348,8 @@ class MultiColumnOverlap(Seeker):
                         overlaps_dict[candidate_table_ids[i]][
                             complete_matched_columns
                         ] = 1
+
+            #############################################################################################################
 
             for tbl in set(candidate_table_ids):
                 if tbl in overlaps_dict and len(overlaps_dict[tbl]) > 0:

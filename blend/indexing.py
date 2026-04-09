@@ -3,7 +3,6 @@ import os
 import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from inspect import cleandoc
 from multiprocessing import Manager, Process, Queue
 from pathlib import Path
 from typing import Optional
@@ -101,7 +100,7 @@ def _table_parsing_worker(
 
     if isinstance(df, pl.DataFrame):
         if queue is not None:
-            queue.put(df)
+            queue.put(df, timeout=20)
         elif tmp_path:
             file = tmp_path.joinpath(f"{uuid.uuid4()}.parquet")
             df.write_parquet(file)  # , compression_level=22)
@@ -155,9 +154,11 @@ def index_tables(
     table_ids = os.listdir(tables_path)
 
     # drop the main index if already exists
+    logger.info("Dropping old index table if exists...")
     indexer.db_handler.drop_index_table()
 
     # create the main index
+    logger.info("Creating new index table...")
     indexer.db_handler.create_index_table()
 
     # Create the Manager and Queue
@@ -226,18 +227,22 @@ def index_tables(
             db_writer.terminate()
             db_writer.join()
 
-    # create indexes
-    s = f"""
-        Tables ingestion completed.
-        Correctly parsed {non_empty_tables}.
-        Creating indexes...
-        """
-    logger.info(cleandoc(s))
+    time_insertion = end_ins_t - start_t
 
+    logger.info(f"Tables ingestion completed in {time_insertion:.2f} seconds.")
+    logger.info(f"Correctly parsed {non_empty_tables} tables.")
+    logger.info("Creating column indexes (this may take some time)...")
+
+    # create indexes
+    start_idx_t = time.time()
     indexer.db_handler.create_column_indexes()
-    end_idx_t = time.time()
+    time_indexes_creation = time.time() - start_idx_t
+
+    logger.info(f"Indexes created in {time_indexes_creation:.2f} seconds.")
 
     logger.debug("Closing DB...")
     indexer.db_handler.close()
     logger.info("Index creation completed.")
-    return (end_ins_t - start_t, end_idx_t - end_ins_t, end_idx_t - start_t)
+
+    time_total = time.time() - start_t
+    return time_insertion, time_indexes_creation, time_total

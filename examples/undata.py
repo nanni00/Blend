@@ -22,7 +22,8 @@ if not data_path.exists():
     print(f"Data path {data_path} does not exist.")
     sys.exit(1)
 
-use_ml_optimizer = freq_dict_path.exists()
+# use_ml_optimizer = freq_dict_path.exists() # FIX: optimizer support not completed yet
+use_ml_optimizer = False
 
 print("--- Instantiating BLEND index ---")
 indexer = BLEND(
