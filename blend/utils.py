@@ -103,7 +103,10 @@ def init_logger(logfile: Optional[Path] = None, stdout: bool = False):
         logger.addHandler(file_handler)
 
     if stdout and not any(
-        isinstance(handler, logging.StreamHandler) for handler in logger.handlers
+        isinstance(handler, logging.StreamHandler)
+        and not isinstance(handler, logging.FileHandler)
+        and getattr(handler, "stream", None) is sys.stdout
+        for handler in logger.handlers
     ):
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)  # Set minimum level for console
