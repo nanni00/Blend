@@ -49,7 +49,6 @@ class MultiColumnOverlap(Seeker):
         sql = self.base_sql.replace("$TOPK$", f"{self.k}")
 
         # The first column is treated outside the loop below
-        # self.input[self.input.columns.values[0]]
         firstcolumn_values = self.table.to_series(0).cast(pl.String)
         sql = sql.replace(
             "$TOKENS$",
@@ -59,9 +58,7 @@ class MultiColumnOverlap(Seeker):
         # For each column (except the first one) add an inner join to
         # the base SQL query, including a join on its specific values
         innerjoins = ""
-        # for column_index in range(1, len(self.input.columns.values)):
         for column_index in range(1, len(self.table.columns)):
-            # [self.input.columns.values[column_index]]
             column_values = self.table.to_series(column_index).cast(pl.String)
             column_name = db.random_subquery_name()
 
@@ -77,9 +74,6 @@ class MultiColumnOverlap(Seeker):
                     ) AS col_{column_name}
                 ON firstcolumn.table_id = col_{column_name}.table_iD AND firstcolumn.row_id = col_{column_name}.row_id
             """
-
-            # other_select_columns = f' , clm_{column_name}.cell_value, clm_{column_name}.column_id $OTHER_SELECT_COLUMNS$ '
-            # sql = sql.replace('$OTHER_SELECT_COLUMNS$', other_select_columns)
 
         sql = (
             sql.replace("$OTHER_SELECT_COLUMNS$", "")
@@ -137,7 +131,7 @@ class MultiColumnOverlap(Seeker):
 
     def run_filter(
         self,
-        posting_lists: list,
+        posting_lists: list[tuple[str, int, bytes, str, int]],
         db: DBHandler,
         xash_size: int = 128,
         chunk_size: int = 100_000,
@@ -147,7 +141,6 @@ class MultiColumnOverlap(Seeker):
 
         # - Preprocessing
         posting_lists_dict = defaultdict(list)
-        posting_lists_cand_struct = {}
 
         for tablerow_superkey in tqdm(
             posting_lists,
@@ -160,14 +153,7 @@ class MultiColumnOverlap(Seeker):
             superkey = tablerow_superkey[2]
             token = tablerow_superkey[3]
             colid = tablerow_superkey[4]
-            tokens = [
-                tablerow_superkey[x] for x in np.arange(5, len(tablerow_superkey), 2)
-            ]
-            cols = [
-                tablerow_superkey[x] for x in np.arange(6, len(tablerow_superkey), 2)
-            ]
             posting_lists_dict[table].append((row, superkey, token, colid))
-            posting_lists_cand_struct[(table, row)] = [tokens, cols]
 
         #############################################################################################################
 
@@ -190,17 +176,12 @@ class MultiColumnOverlap(Seeker):
         for (key,), data in g:
             gd[str(key)] = data.rows()
 
-        candidate_external_row_ids = []
         candidate_external_col_ids = []
         candidate_input_rows = []
         candidate_table_rows = []
         candidate_table_ids = []
-        all_pls = 0
-        total_approved = 0
-        total_match = 0
         overlaps_dict = {}
         super_key_index = list(df.columns).index("super_key")
-        checked_tables = 0
         max_table_check = 10000000
 
         posting_lists_table_ids = sorted(
@@ -215,16 +196,11 @@ class MultiColumnOverlap(Seeker):
             disable=not verbose,
             ncols=TQDM_NCOLS,
         ):
-            checked_tables += 1
-            if checked_tables == max_table_check:
-                # pruned = True
-                break
             set_of_rowids = set()
             hitting_PLs = posting_lists_dict[tableid]
             if len(top_joinable_tables) >= self.k and top_joinable_tables[0][0] >= len(
                 hitting_PLs
             ):
-                # pruned = True
                 break
             already_checked_hits = 0
 
@@ -246,12 +222,10 @@ class MultiColumnOverlap(Seeker):
                 token = hit[2]
                 colid = hit[3]
                 relevant_input_rows = gd[token]
-                all_pls += len(relevant_input_rows)
                 already_checked_hits += 1
 
                 for input_row in relevant_input_rows:
                     if (int(input_row[super_key_index]) | superkey) == superkey:
-                        candidate_external_row_ids.append(rowid)
                         set_of_rowids.add(rowid)
                         candidate_external_col_ids.append(colid)
                         candidate_input_rows.append(input_row)
@@ -260,20 +234,23 @@ class MultiColumnOverlap(Seeker):
 
         #############################################################################################################
 
-        if len(candidate_external_row_ids) > 0:
-            # We get a list of posting lists to evaluate as candidate matches, fetched
-            # from the combination of the given table_id and row_id
-            candidate_t_ids = [str(t[0]) for t in candidate_table_rows]
-            candidate_r_ids = [int(t[1]) for t in candidate_table_rows]
+        if candidate_table_rows:
+            # Different input rows can point to the same external row.
+            # Fetch each external row once, but keep the full candidate lists
+            # below so overlap scoring still evaluates every candidate pairing.
+            unique_candidate_table_rows = list(dict.fromkeys(candidate_table_rows))
+            candidate_t_ids = [str(t[0]) for t in unique_candidate_table_rows]
+            candidate_r_ids = [int(t[1]) for t in unique_candidate_table_rows]
 
             # contains rowid that each rowid has dict that maps colids to tokenized
             table_row_dict = defaultdict(dict)
             total_fetched_tuples = 0
 
             for i in tqdm(
-                range(0, len(candidate_table_rows) + chunk_size, chunk_size),
+                range(0, len(unique_candidate_table_rows), chunk_size),
                 ncols=TQDM_NCOLS,
                 desc="Fetching candidate tuples".ljust(TQDM_RIGHT_PAD, " "),
+                disable=not verbose,
             ):
                 query = """
                 SELECT 
@@ -312,7 +289,11 @@ class MultiColumnOverlap(Seeker):
             #############################################################################################################
 
             if verbose:
-                logger.debug(f"Fetched {total_fetched_tuples}")
+                logger.debug(
+                    "Fetched %s tuples for %s unique candidate rows.",
+                    total_fetched_tuples,
+                    len(unique_candidate_table_rows),
+                )
 
             for i in tqdm(
                 range(len(candidate_table_rows)),
@@ -328,9 +309,7 @@ class MultiColumnOverlap(Seeker):
                 match, matched_columns = self.evaluate_rows(
                     candidate_input_rows[i], col_dict, query_columns
                 )
-                total_approved += 1
                 if match:
-                    total_match += 1
                     complete_matched_columns = "{}{}".format(
                         str(candidate_external_col_ids[i]), matched_columns
                     )

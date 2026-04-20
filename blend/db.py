@@ -71,7 +71,7 @@ class DBHandler(object):
         else:
             self.frequency_dict = {}
 
-    def drop_index_table(self):
+    def drop_index_table(self) -> None:
         """Drops the index table if it exists."""
         with duckdb.connect(self.db_path) as con:
             con.sql(f"""
@@ -79,7 +79,7 @@ class DBHandler(object):
                 CHECKPOINT {self.db_name};
             """)
 
-    def create_index_table(self):
+    def create_index_table(self) -> None:
         """Creates the index table."""
         with duckdb.connect(self.db_path) as con:
             con.sql(f"""
@@ -93,30 +93,24 @@ class DBHandler(object):
                 PRIMARY KEY (table_id, row_id, column_id)
             );""")
 
-    def create_column_indexes(self):
+    def create_column_indexes(self) -> None:
         """Creates indexes on the cell_value column."""
         with duckdb.connect(self.db_path) as con:
             # con.sql(f"CREATE INDEX table_id_idx ON {self.index_table} (table_id);")
             con.sql(f"CREATE INDEX cell_value_idx ON {self.index_table} (cell_value);")
 
-    def save_data_to_duckdb(self, data: pl.DataFrame | list[pl.DataFrame] | Path):
-        """Saves data to the DuckDB database.
+    def save_data_to_duckdb(self, data: pl.DataFrame | list[pl.DataFrame]) -> None:
+        """Save parsed table data to the DuckDB index.
 
         Args:
-            data: A polars DataFrame, a list of polars DataFrames, or a Path to a parquet file.
+            data: A Polars DataFrame or a list of Polars DataFrames.
         """
         if isinstance(data, pl.DataFrame):
             data = [data]
 
         with duckdb.connect(self.db_path) as con:
-            if isinstance(data, list):
-                for df in data:
-                    con.sql(f"INSERT INTO {self.index_table} SELECT * FROM df;")
-            elif isinstance(data, Path):
-                filename = data.absolute().as_posix()
-                con.sql(
-                    f"INSERT INTO {self.index_table} SELECT * FROM read_parquet('{filename}');"
-                )
+            for df in data:
+                con.sql(f"INSERT INTO {self.index_table} SELECT * FROM df;")
 
     def close(self) -> None:
         """Closes the database connection (placeholder)."""

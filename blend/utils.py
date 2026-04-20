@@ -119,7 +119,7 @@ def clean(
     s: Any,
     lowercase: bool = False,
     replace_whitespaces: bool = False,
-    bad_tokens: Optional[tuple[str]] = None,
+    bad_tokens: Optional[list[str]] = None,
 ):
     """Cleans a string or other value.
 
@@ -133,7 +133,7 @@ def clean(
         The cleaned string, or an empty string if it's a bad token.
     """
     if bad_tokens is None:
-        bad_tokens = ("nan", "null", "none")
+        bad_tokens = ["nan", "null", "none"]
 
     s = str(s)
     if lowercase:
@@ -232,7 +232,7 @@ def parse_table(
     load_opts: Optional[dict] = None,
     clean_args: Optional[dict] = None,
     xash_size: int = 128,
-    max_cell_length: int = 128,
+    max_cell_length: Optional[int] = 128,
 ) -> tuple[str, pl.DataFrame | str]:
     """Load and parse the table at the specified path.
 
@@ -254,6 +254,7 @@ def parse_table(
         max_cell_length: The size of the stored cell value as bytes (default 128).
             Only the first max_cell_length of each string will be stored.
             If it is negative, only the last max_cell_length will be stored.
+            If it is None, cell values are not truncated.
 
     Returns:
         A tuple with the table ID (obtained from its path) and the parsed rows.

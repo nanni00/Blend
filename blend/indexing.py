@@ -1,11 +1,10 @@
 import logging
 import os
 import time
-import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import Manager, Process, Queue
+from multiprocessing import Manager, Process
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Protocol
 
 import polars as pl
 from tqdm import tqdm
@@ -15,57 +14,50 @@ from .db import DBHandler
 from .utils import init_logger, parse_table
 
 
+class _DataFrameQueue(Protocol):
+    def get(self) -> pl.DataFrame | None: ...
+
+    def put(self, item: pl.DataFrame | None, timeout: Optional[float] = None) -> None: ...
+
+
 def _db_worker(
-    queue: Optional[Queue],
-    tmp_path: Optional[Path],
+    queue: Optional[_DataFrameQueue],
     batch_rows: int,
     db_handler: DBHandler,
-):
-    """Dedicated consumer process that handles all DB writes.
+) -> None:
+    """Consume parsed tables from the queue and write them to DuckDB.
 
     Args:
-        queue: The queue containing dataframes to write.
-        tmp_path: The temporary path for file-based communication (alternative to queue).
+        queue: The queue containing parsed tables to write.
         batch_rows: The number of rows to accumulate before writing.
         db_handler: The DBHandler instance.
     """
-    dataframes = []
+    if queue is None:
+        raise ValueError("queue must be provided")
+
+    dataframes: list[pl.DataFrame] = []
     while True:
-        if queue:
-            df = queue.get()
-            if df is None:  # Poison pill to stop the process
-                break
+        df = queue.get()
+        if df is None:  # Poison pill to stop the process
+            break
 
-            if not isinstance(df, pl.DataFrame):
-                raise TypeError(f"Expected polars.DataFrame, found: {type(df)}")
-            dataframes.append(df)
-            if sum(_df.height for _df in dataframes) < batch_rows:
-                continue
+        if not isinstance(df, pl.DataFrame):
+            raise TypeError(f"Expected polars.DataFrame, found: {type(df)}")
+        dataframes.append(df)
+        if sum(_df.height for _df in dataframes) < batch_rows:
+            continue
 
-            try:
-                db_handler.save_data_to_duckdb(dataframes)
-                dataframes.clear()
-            except Exception as e:
-                print(f"DB Write Error: {e}")
+        try:
+            db_handler.save_data_to_duckdb(dataframes)
+            dataframes.clear()
+        except Exception as e:
+            print(f"DB Write Error: {e}")
 
-        elif tmp_path:
-            time.sleep(0.1)
-            stop = False
-            files = os.listdir(tmp_path)
-            for filename in files:
-                if filename == "STOP":
-                    os.remove(tmp_path.joinpath(filename))
-                    stop = True
-                    break
-                else:
-                    try:
-                        file = tmp_path.joinpath(filename)
-                        db_handler.save_data_to_duckdb(file)
-                        os.remove(tmp_path.joinpath(filename))
-                    except Exception as e:
-                        print(e)
-            if stop:
-                break
+    if dataframes:
+        try:
+            db_handler.save_data_to_duckdb(dataframes)
+        except Exception as e:
+            print(f"DB Write Error: {e}")
 
 
 def _table_parsing_worker(
@@ -73,12 +65,10 @@ def _table_parsing_worker(
     load_opts: Optional[dict],
     clean_args: Optional[dict],
     xash_size: int,
-    max_cell_length: int,
-    db_handler: DBHandler,
-    queue: Optional[Queue],
-    tmp_path: Optional[Path],
-):
-    """Parses a table and sends the result to the DB worker.
+    max_cell_length: Optional[int],
+    queue: Optional[_DataFrameQueue],
+) -> tuple[str, bool]:
+    """Parse a table and send the result to the DB worker.
 
     Args:
         table_path: Path to the table file.
@@ -86,9 +76,10 @@ def _table_parsing_worker(
         clean_args: Options for cleaning the table.
         xash_size: Size of the XASH hash.
         max_cell_length: Maximum length of cell values.
-        db_handler: The DBHandler instance.
-        queue: Use this queue to send dataframes if provided.
-        tmp_path: Use this path to write parquet files if queue is not provided.
+        queue: Queue used to hand parsed dataframes to the DB worker.
+
+    Returns:
+        The parsed table ID and whether parsing produced a non-empty dataframe.
     """
     table_id, df = parse_table(
         table_path,
@@ -99,11 +90,9 @@ def _table_parsing_worker(
     )
 
     if isinstance(df, pl.DataFrame):
-        if queue is not None:
-            queue.put(df, timeout=20)
-        elif tmp_path:
-            file = tmp_path.joinpath(f"{uuid.uuid4()}.parquet")
-            df.write_parquet(file)  # , compression_level=22)
+        if queue is None:
+            raise ValueError("queue must be provided")
+        queue.put(df, timeout=20)
         return table_id, True
     return table_id, False
 
@@ -117,8 +106,7 @@ def index_tables(
     load_opts: Optional[dict] = None,
     max_queue_size: Optional[int] = None,
     batch_rows: Optional[int] = None,
-    tmp_path: Optional[Path] = None,
-) -> tuple:
+) -> tuple[float, float, float]:
     """Index all the tables stored under the given tables path.
 
     It considers the path as a flat folder with only tables.
@@ -130,13 +118,11 @@ def index_tables(
         logfile_path: The path to a logfile.
         max_workers: Maximum number of processes to instantiate.
         load_opts: A dictionary with Polars scan csv/parquet/... configuration options. See blend.utils.load_table.
-        max_queue_size: Size of the queue when the insertion is queue-based.
-        batch_rows: Size of batch insert when the insertion is queue-based.
-        tmp_path: Temporary folder where the temporary parquet files representing the parsed tables will be placed
-            when the insertion is file-based.
+        max_queue_size: Maximum size of the queue used between parsers and the DB writer.
+        batch_rows: Number of rows to accumulate before each DB write.
 
     Returns:
-        A tuple with timing for the tables parse and insertion time, support indexes creation time and total time.
+        A tuple containing insertion time, index creation time, and total runtime.
     """
     if not tables_path.exists():
         raise FileNotFoundError(f"tables path doesn't exist: {tables_path}")
@@ -163,17 +149,11 @@ def index_tables(
 
     # Create the Manager and Queue
     manager = Manager()
-
-    if tmp_path:
-        queue = None
-    else:
-        # Optional: limit size to prevent RAM overflow
-        queue = manager.Queue(max_queue_size)
+    # Optional: limit size to prevent RAM overflow
+    queue = manager.Queue(max_queue_size)
 
     # Start the DB Worker Process
-    db_writer = Process(
-        target=_db_worker, args=(queue, tmp_path, batch_rows, indexer.db_handler)
-    )
+    db_writer = Process(target=_db_worker, args=(queue, batch_rows, indexer.db_handler))
     db_writer.start()
 
     start_t = time.time()
@@ -190,9 +170,7 @@ def index_tables(
                     indexer._clean_args,
                     indexer.xash_size,
                     indexer.max_cell_length,
-                    indexer.db_handler,  # ty: ignore
                     queue,
-                    tmp_path,
                 )
                 for table_id in list(table_ids)
             }
@@ -215,17 +193,12 @@ def index_tables(
         end_ins_t = time.time()
 
         # Stop the DB worker
-        if queue:
-            queue.put(None)
-        elif tmp_path:
-            while len(os.listdir(tmp_path)) != 0:
-                continue
-            with open(tmp_path.joinpath("STOP"), "w") as file:
-                file.write("STOP")
+        queue.put(None)
         db_writer.join(30)
         if db_writer.is_alive():
             db_writer.terminate()
             db_writer.join()
+        manager.shutdown()
 
     time_insertion = end_ins_t - start_t
 
