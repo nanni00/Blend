@@ -219,3 +219,86 @@ def index_tables(
 
     time_total = time.time() - start_t
     return time_insertion, time_indexes_creation, time_total
+
+
+
+def index_tables_seq(
+    indexer: BLEND,
+    tables_path: Path,
+    log_stdout: bool = False,
+    logfile_path: Optional[Path] = None,
+    load_opts: Optional[dict] = None,
+    batch_rows: Optional[int] = None,
+) -> tuple[float, float, float]:
+    """Index all tables sequentially, without multiprocessing or queues."""
+
+    if not tables_path.exists():
+        raise FileNotFoundError(f"tables path doesn't exist: {tables_path}")
+
+    if batch_rows is None:
+        batch_rows = 1_000_000
+
+    init_logger(logfile_path, log_stdout)
+    logger = logging.getLogger(f"blend_logger_{os.getpid()}")
+
+    table_ids = os.listdir(tables_path)
+
+    logger.info("Dropping old index table if exists...")
+    indexer.db_handler.drop_index_table()
+
+    logger.info("Creating new index table...")
+    indexer.db_handler.create_index_table()
+
+    start_t = time.time()
+    dataframes: list[pl.DataFrame] = []
+    non_empty_tables = 0
+
+    for table_id in tqdm(
+        table_ids,
+        desc="Parsing and storing tables: ",
+        total=len(table_ids),
+        disable=not log_stdout,
+    ):
+        try:
+            table_path = tables_path.joinpath(table_id)
+
+            _, df = parse_table(
+                table_path,
+                load_opts,
+                indexer._clean_args,
+                indexer.xash_size,
+                indexer.max_cell_length,
+            )
+
+            if isinstance(df, pl.DataFrame):
+                dataframes.append(df)
+                non_empty_tables += 1
+
+                if sum(_df.height for _df in dataframes) >= batch_rows:
+                    indexer.db_handler.save_data_to_duckdb(dataframes)
+                    dataframes.clear()
+
+        except Exception as e:
+            logger.error(f"[table:{table_id}][error:{type(e)}][msg:{e}]")
+
+    if dataframes:
+        indexer.db_handler.save_data_to_duckdb(dataframes)
+
+    time_insertion = time.time() - start_t
+
+    logger.info(f"Tables ingestion completed in {time_insertion:.2f} seconds.")
+    logger.info(f"Correctly parsed {non_empty_tables} tables.")
+    logger.info("Creating column indexes (this may take some time)...")
+
+    start_idx_t = time.time()
+    indexer.db_handler.create_column_indexes()
+    time_indexes_creation = time.time() - start_idx_t
+
+    logger.info(f"Indexes created in {time_indexes_creation:.2f} seconds.")
+
+    logger.debug("Closing DB...")
+    indexer.db_handler.close()
+    logger.info("Index creation completed.")
+
+    time_total = time.time() - start_t
+    return time_insertion, time_indexes_creation, time_total
